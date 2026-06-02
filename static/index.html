@@ -7,7 +7,21 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
+    <div id="login-container" style="display: none; height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at top, #1e1e38 0%, #0c0c14 100%); font-family: 'Inter', sans-serif;">
+        <div class="glass" style="max-width: 420px; width: 90%; padding: 3rem 2.5rem; text-align: center; border-radius: 20px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 20px 40px rgba(0,0,0,0.5);">
+            <div class="logo-icon" style="width: 60px; height: 60px; margin: 0 auto 1.5rem; display: flex; align-items: center; justify-content: center; background: var(--primary-glow); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 16px; box-shadow: var(--neon-glow-primary);">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: white;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            </div>
+            <h1 style="font-size: 1.8rem; font-weight: 800; margin-bottom: 0.5rem; background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">YouTube Playlist Agent</h1>
+            <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.5; margin-bottom: 2.5rem;">Automated Playlist Orchestration & Duplicates Clean Up. Sign in with your Google account to get started.</p>
+            <a href="/api/auth/login" class="btn btn-primary" style="display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; border-radius: 12px; font-weight: 600; font-size: 1rem; width: 100%; text-decoration: none; box-shadow: var(--neon-glow-primary); transition: all 0.3s ease;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" fill="#EA4335"/></svg>
+                Sign in with Google
+            </a>
+        </div>
+    </div>
+
+    <div class="container" id="app-container" style="display: none;">
         <!-- Header -->
         <header class="glass">
             <div class="logo-section">
@@ -20,6 +34,13 @@
                 </div>
             </div>
             <div class="system-status">
+                <div id="user-profile" style="display: none; align-items: center; gap: 10px; margin-right: 15px; padding-right: 15px; border-right: 1px solid rgba(255,255,255,0.1);">
+                    <div style="text-align: right;">
+                        <div id="user-name" style="font-weight: 600; font-size: 0.85rem; color: var(--text-primary);">--</div>
+                        <div id="user-email" style="font-size: 0.75rem; color: var(--text-secondary);">--</div>
+                    </div>
+                    <button onclick="logout()" class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; cursor: pointer; color: var(--text-secondary);">Sign Out</button>
+                </div>
                 <div class="status-indicator">
                     <span>Engine:</span>
                     <span id="engine-status-dot" class="status-dot active"></span>

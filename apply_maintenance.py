@@ -5,8 +5,12 @@ import uuid
 from datetime import datetime
 from core import get_browser, add_video_to_playlist, remove_video_from_playlist
 
-def record_history(action):
-    history_path = os.path.join(os.path.dirname(__file__), "maintenance_history.json")
+def record_history(action, user_id=None):
+    if user_id is None:
+        history_path = os.path.join(os.path.dirname(__file__), "maintenance_history.json")
+    else:
+        history_path = os.path.join(os.path.dirname(__file__), f"maintenance_history_{user_id}.json")
+        
     history = []
     if os.path.exists(history_path):
         try:

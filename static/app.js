@@ -2364,14 +2364,64 @@ function filterTrackedVideos() {
     renderTrackedVideosTable(sorted);
 }
 
+let currentUser = null;
+
+async function checkSession() {
+    try {
+        const response = await fetch('/api/auth/session');
+        if (response.status === 401) {
+            document.getElementById('login-container').style.display = 'flex';
+            document.getElementById('app-container').style.display = 'none';
+            return false;
+        }
+        
+        const data = await response.json();
+        currentUser = data;
+        
+        if (data.logged_in || data.local_mode) {
+            document.getElementById('login-container').style.display = 'none';
+            document.getElementById('app-container').style.display = 'block';
+            
+            const profileDiv = document.getElementById('user-profile');
+            if (data.email) {
+                document.getElementById('user-name').innerText = data.name || 'User';
+                document.getElementById('user-email').innerText = data.email;
+                profileDiv.style.display = 'flex';
+            } else {
+                profileDiv.style.display = 'none';
+            }
+            return true;
+        } else {
+            document.getElementById('login-container').style.display = 'flex';
+            document.getElementById('app-container').style.display = 'none';
+            return false;
+        }
+    } catch (e) {
+        console.error("Session check failed", e);
+        return false;
+    }
+}
+
+async function logout() {
+    try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        window.location.reload();
+    } catch (e) {
+        console.error("Logout failed", e);
+    }
+}
+
 // Initialize
-window.addEventListener('load', () => {
-    loadStatus();
-    loadSettings();
-    statusInterval = setInterval(loadStatus, 4000);
-    
-    const select = document.getElementById('target-playlist-select');
-    if (select) {
-        select.addEventListener('change', updateSelectedCount);
+window.addEventListener('load', async () => {
+    const authenticated = await checkSession();
+    if (authenticated) {
+        loadStatus();
+        loadSettings();
+        statusInterval = setInterval(loadStatus, 4000);
+        
+        const select = document.getElementById('target-playlist-select');
+        if (select) {
+            select.addEventListener('change', updateSelectedCount);
+        }
     }
 });

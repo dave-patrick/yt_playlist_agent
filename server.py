@@ -6,15 +6,161 @@ import threading
 import subprocess
 from typing import Optional, List
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Cookie, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, HTMLResponse
 from pydantic import BaseModel
+import requests
+import uuid
+import db_helper
 
 import scheduler
 from core import add_video_to_playlist, remove_video_from_playlist, list_videos_in_playlist, move_video, get_browser
 
 app = FastAPI(title="YouTube Playlist Agent API")
+
+# Settings loader helper
+SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "settings.json")
+def get_settings():
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def is_oauth_configured():
+    settings = get_settings()
+    return bool(settings.get("google_client_id") and settings.get("google_client_secret"))
+
+def get_redirect_uri(request: Request):
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/api/auth/callback"
+
+# Dependency to get current user
+async def get_current_user(request: Request):
+    if not is_oauth_configured():
+        return {"user_id": 1, "email": "local@user.com", "name": "Local Admin"}
+        
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    user = db_helper.get_session_user(session_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return user
+
+# Auth Endpoints
+@app.get("/api/auth/config-check")
+def auth_config_check():
+    return {"configured": is_oauth_configured()}
+
+@app.get("/api/auth/login")
+def auth_login(request: Request):
+    settings = get_settings()
+    client_id = settings.get("google_client_id")
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Google Client ID is not configured in settings.json")
+        
+    redirect_uri = get_redirect_uri(request)
+    scopes = "openid email profile https://www.googleapis.com/auth/youtube"
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
+        f"&response_type=code"
+        f"&scope={scopes}"
+        f"&access_type=offline"
+        f"&prompt=consent"
+    )
+    return RedirectResponse(auth_url)
+
+@app.get("/api/auth/callback")
+def auth_callback(request: Request, code: str):
+    settings = get_settings()
+    client_id = settings.get("google_client_id")
+    client_secret = settings.get("google_client_secret")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="OAuth credentials not fully configured")
+        
+    redirect_uri = get_redirect_uri(request)
+    
+    token_url = "https://oauth2.googleapis.com/token"
+    payload = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    
+    resp = requests.post(token_url, data=payload)
+    if not resp.ok:
+        return HTMLResponse(content=f"<h1>Authentication Failed</h1><p>{resp.text}</p>", status_code=400)
+        
+    tokens = resp.json()
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    expires_in = tokens.get("expires_in", 3600)
+    
+    userinfo_url = "https://www.googleapis.com/oauth2/v3/userinfo"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    userinfo_resp = requests.get(userinfo_url, headers=headers)
+    if not userinfo_resp.ok:
+        return HTMLResponse(content="<h1>Failed to fetch user info from Google</h1>", status_code=400)
+        
+    user_info = userinfo_resp.json()
+    email = user_info.get("email")
+    name = user_info.get("name", email)
+    
+    if not email:
+        return HTMLResponse(content="<h1>Google account did not return an email address</h1>", status_code=400)
+        
+    user_id = db_helper.get_or_create_user(email, name)
+    db_helper.save_user_credentials(user_id, access_token, refresh_token, expires_in)
+    
+    db_helper.import_default_rules_if_empty(user_id)
+    
+    session_id = str(uuid.uuid4())
+    db_helper.create_session(session_id, user_id)
+    
+    response = RedirectResponse(url="/")
+    response.set_cookie(
+        key="session_id",
+        value=session_id,
+        httponly=True,
+        max_age=86400 * 30,
+        samesite="lax",
+        secure=False
+    )
+    return response
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response, session_id: Optional[str] = Cookie(None)):
+    if session_id:
+        db_helper.delete_session(session_id)
+    response = JSONResponse(content={"success": True})
+    response.delete_cookie("session_id")
+    return response
+
+@app.get("/api/auth/session")
+def auth_session(user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    return {
+        "logged_in": True if is_oauth_configured() else False,
+        "local_mode": not is_oauth_configured(),
+        "user_id": user_id,
+        "email": user.get("email"),
+        "name": user.get("name")
+    }
+
+def get_user_file_path(filename: str, user) -> str:
+    if not is_oauth_configured():
+        return os.path.join(os.path.dirname(__file__), filename)
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    base, ext = os.path.splitext(filename)
+    return os.path.join(os.path.dirname(__file__), f"{base}_{user_id}{ext}")
 
 # Shared Task Manager
 class TaskManager:
@@ -277,14 +423,14 @@ def read_root():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 @app.get("/api/status")
-def get_status():
+def get_status(user=Depends(get_current_user)):
     total_playlists = 0
     total_videos = 0
     pending_actions = 0
     ai_cache_hits = 0
     
     # 1. Total Playlists & Videos
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    report_path = get_user_file_path("playlists_report.json", user)
     if os.path.exists(report_path):
         try:
             with open(report_path, "r", encoding="utf-8") as f:
@@ -294,7 +440,7 @@ def get_status():
         except: pass
         
     # 2. Pending Actions
-    maint_path = os.path.join(os.path.dirname(__file__), "maintenance_actions.json")
+    maint_path = get_user_file_path("maintenance_actions.json", user)
     if os.path.exists(maint_path):
         try:
             with open(maint_path, "r", encoding="utf-8") as f:
@@ -306,7 +452,7 @@ def get_status():
     ai_pending = 0
     ai_reviewed = 0
     ai_total = 0
-    class_path = os.path.join(os.path.dirname(__file__), "ai_classifications.json")
+    class_path = get_user_file_path("ai_classifications.json", user)
     if os.path.exists(class_path):
         try:
             with open(class_path, "r", encoding="utf-8") as f:
@@ -344,7 +490,7 @@ def get_status():
             ai_cache_hits = ai_total
         except: pass
     if ai_total == 0:
-        cache_path = os.path.join(os.path.dirname(__file__), "ai_cache_hits.txt")
+        cache_path = get_user_file_path("ai_cache_hits.txt", user)
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, "r") as f:
@@ -354,7 +500,7 @@ def get_status():
         
     # 4. Last run
     last_run = "--:--"
-    last_run_path = os.path.join(os.path.dirname(__file__), "last_run.txt")
+    last_run_path = get_user_file_path("last_run.txt", user)
     if os.path.exists(last_run_path):
         try:
             with open(last_run_path, "r") as f:
@@ -365,7 +511,7 @@ def get_status():
     
     active_job = task_manager.get_active_job()
     if active_job == "generate_maintenance":
-        progress_path = os.path.join(os.path.dirname(__file__), "generate_progress.json")
+        progress_path = get_user_file_path("generate_progress.json", user)
         if os.path.exists(progress_path):
             try:
                 with open(progress_path, "r") as f:
@@ -389,8 +535,8 @@ def get_status():
     }
 
 @app.get("/api/playlists")
-def get_playlists():
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+def get_playlists(user=Depends(get_current_user)):
+    report_path = get_user_file_path("playlists_report.json", user)
     if os.path.exists(report_path):
         try:
             with open(report_path, "r", encoding="utf-8") as f:
@@ -413,8 +559,12 @@ def extract_video_id(url: str) -> str:
         return url.split("v=")[1].split("&")[0]
     return url.split("/")[-1]
 
-def find_title_in_cache(url: str, playlist_name: str) -> str:
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+def find_title_in_cache(url: str, playlist_name: str, user_id=None) -> str:
+    if user_id is None:
+        report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    else:
+        report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+        
     if os.path.exists(report_path):
         try:
             with open(report_path, "r", encoding="utf-8") as f:
@@ -427,8 +577,12 @@ def find_title_in_cache(url: str, playlist_name: str) -> str:
         except: pass
     return "Unknown Video"
 
-def find_channel_in_cache(url: str, playlist_name: str = None) -> str:
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+def find_channel_in_cache(url: str, playlist_name: str = None, user_id=None) -> str:
+    if user_id is None:
+        report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    else:
+        report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+        
     if os.path.exists(report_path):
         try:
             with open(report_path, "r", encoding="utf-8") as f:
@@ -446,8 +600,39 @@ def find_channel_in_cache(url: str, playlist_name: str = None) -> str:
         except: pass
     return ""
 
-def update_cache_for_move(video_url: str, source_playlist: str, target_playlist: str):
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+def get_playlist_id_by_name(playlist_name: str, user_id) -> str:
+    report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                report = json.load(f)
+            for p in report:
+                if p["name"].lower() == playlist_name.lower():
+                    return p["id"]
+        except: pass
+    return None
+
+def get_playlist_item_id_from_cache(video_url: str, playlist_name: str, user_id) -> str:
+    report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+    vid = extract_video_id(video_url)
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                report = json.load(f)
+            for p in report:
+                if p["name"].lower() == playlist_name.lower():
+                    for v in p.get("videos", []):
+                        if extract_video_id(v.get("url", "")) == vid:
+                            return v.get("playlist_item_id")
+        except: pass
+    return None
+
+def update_cache_for_move(video_url: str, source_playlist: str, target_playlist: str, user_id=None):
+    if user_id is None:
+        report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    else:
+        report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+        
     if not os.path.exists(report_path):
         return
     try:
@@ -479,8 +664,12 @@ def update_cache_for_move(video_url: str, source_playlist: str, target_playlist:
     except Exception as e:
         print(f"Error updating cache for move: {e}")
 
-def update_cache_for_delete(video_url: str, playlist: str):
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+def update_cache_for_delete(video_url: str, playlist: str, user_id=None):
+    if user_id is None:
+        report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    else:
+        report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+        
     if not os.path.exists(report_path):
         return
     try:
@@ -504,314 +693,561 @@ def append_agent_log(message: str):
         f.write(f"\n[Batch Operation] {timestamp} - {message}\n")
 
 # Background thread execution functions
-def execute_batch_move_background(video_urls: List[str], source_playlist: str, target_playlist: str):
+def execute_batch_move_background(video_urls: List[str], source_playlist: str, target_playlist: str, user_id=None):
     total = len(video_urls)
-    append_agent_log(f"Starting batch move of {total} videos from '{source_playlist}' to '{target_playlist}'.")
+    append_agent_log(f"Starting batch move of {total} videos from '{source_playlist}' to '{target_playlist}' (user_id={user_id}).")
     
-    driver = None
-    try:
-        driver = get_browser()
+    if is_oauth_configured() and user_id is not None:
+        import youtube_api
         success_count = 0
-        
-        for i, url in enumerate(video_urls):
-            current_job_name = f"Batch Move ({i+1}/{total})"
-            with task_manager.lock:
-                scheduler.active_job = current_job_name
-                task_manager.active_job = current_job_name
-            
-            append_agent_log(f"[{i+1}/{total}] Moving: {url}...")
-            
-            success = False
-            try:
-                success = move_video(url, source_playlist, target_playlist, driver=driver)
-            except Exception as e:
-                append_agent_log(f"Error moving {url}: {e}")
-            
-            if success:
-                success_count += 1
-                append_agent_log(f"Successfully moved {url}.")
+        try:
+            target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
+            if not target_playlist_id:
+                raise ValueError(f"Target playlist '{target_playlist}' not found in user cache")
                 
-                # Record to history
+            for i, url in enumerate(video_urls):
+                current_job_name = f"Batch Move ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
                 vid = extract_video_id(url)
-                title = find_title_in_cache(url, source_playlist)
-                action = {
-                    "vid": vid,
-                    "title": title,
-                    "type": "MISPLACED",
-                    "from": [source_playlist],
-                    "to": target_playlist
-                }
-                from apply_maintenance import record_history
-                action_id = record_history(action)
-                append_agent_log(f"History recorded. Action ID: {action_id}")
+                append_agent_log(f"[{i+1}/{total}] Moving: {url}...")
                 
-                # Send Discord report
+                success = False
                 try:
-                    from apply_maintenance import send_discord_history_report
-                    send_discord_history_report([{**action, "action_id": action_id}])
-                except Exception as ex:
-                    append_agent_log(f"Discord report fail: {ex}")
-                
-                # Update cache
-                update_cache_for_move(url, source_playlist, target_playlist)
-            else:
-                append_agent_log(f"Failed to move: {url}")
-                
-            time.sleep(1)
+                    source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
+                    if not source_playlist_item_id:
+                        raise ValueError(f"Source item ID for '{url}' not found")
+                    success = youtube_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+                except Exception as e:
+                    append_agent_log(f"Error moving {url}: {e}")
+                    
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully moved {url}.")
+                    
+                    title = find_title_in_cache(url, source_playlist, user_id)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "MISPLACED",
+                        "from": [source_playlist],
+                        "to": target_playlist
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action, user_id)
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except: pass
+                    
+                    update_cache_for_move(url, source_playlist, target_playlist, user_id)
+                else:
+                    append_agent_log(f"Failed to move: {url}")
+                    
+            append_agent_log(f"Batch move completed. Successfully moved {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Batch move completed. Moved {success_count}/{total} videos from '{source_playlist}' to '{target_playlist}'.")
+        except Exception as e:
+            append_agent_log(f"Fatal error in API batch move: {e}")
+            scheduler.send_webhook_notification(f"Batch move failed: {e}", is_error=True)
+        finally:
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
+    else:
+        driver = None
+        try:
+            driver = get_browser()
+            success_count = 0
             
-        append_agent_log(f"Batch move completed. Successfully moved {success_count} of {total} videos.")
-        scheduler.send_webhook_notification(f"Batch move completed. Moved {success_count}/{total} videos from '{source_playlist}' to '{target_playlist}'.")
-        
-    except Exception as e:
-        append_agent_log(f"Fatal error in batch move: {e}")
-        scheduler.send_webhook_notification(f"Batch move failed: {e}", is_error=True)
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        
-        with task_manager.lock:
-            task_manager.active_job = None
-            with scheduler.job_lock:
-                scheduler.active_job = None
+            for i, url in enumerate(video_urls):
+                current_job_name = f"Batch Move ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
+                append_agent_log(f"[{i+1}/{total}] Moving: {url}...")
+                
+                success = False
+                try:
+                    success = move_video(url, source_playlist, target_playlist, driver=driver)
+                except Exception as e:
+                    append_agent_log(f"Error moving {url}: {e}")
+                
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully moved {url}.")
+                    
+                    vid = extract_video_id(url)
+                    title = find_title_in_cache(url, source_playlist)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "MISPLACED",
+                        "from": [source_playlist],
+                        "to": target_playlist
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action)
+                    append_agent_log(f"History recorded. Action ID: {action_id}")
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except Exception as ex:
+                        append_agent_log(f"Discord report fail: {ex}")
+                    
+                    update_cache_for_move(url, source_playlist, target_playlist)
+                else:
+                    append_agent_log(f"Failed to move: {url}")
+                    
+                time.sleep(1)
+                
+            append_agent_log(f"Batch move completed. Successfully moved {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Batch move completed. Moved {success_count}/{total} videos from '{source_playlist}' to '{target_playlist}'.")
+            
+        except Exception as e:
+            append_agent_log(f"Fatal error in batch move: {e}")
+            scheduler.send_webhook_notification(f"Batch move failed: {e}", is_error=True)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
 
-def execute_batch_delete_background(video_urls: List[str], playlist: str):
+def execute_batch_delete_background(video_urls: List[str], playlist: str, user_id=None):
     total = len(video_urls)
-    append_agent_log(f"Starting batch delete of {total} videos from '{playlist}'.")
+    append_agent_log(f"Starting batch delete of {total} videos from '{playlist}' (user_id={user_id}).")
     
-    driver = None
-    try:
-        driver = get_browser()
+    if is_oauth_configured() and user_id is not None:
+        import youtube_api
         success_count = 0
-        
-        for i, url in enumerate(video_urls):
-            current_job_name = f"Batch Delete ({i+1}/{total})"
-            with task_manager.lock:
-                scheduler.active_job = current_job_name
-                task_manager.active_job = current_job_name
-            
-            append_agent_log(f"[{i+1}/{total}] Deleting: {url}...")
-            
-            success = False
-            try:
-                success = remove_video_from_playlist(url, playlist, driver=driver)
-            except Exception as e:
-                append_agent_log(f"Error deleting {url}: {e}")
-            
-            if success:
-                success_count += 1
-                append_agent_log(f"Successfully deleted {url}.")
+        try:
+            for i, url in enumerate(video_urls):
+                current_job_name = f"Batch Delete ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
                 
-                # Record to history
                 vid = extract_video_id(url)
-                title = find_title_in_cache(url, playlist)
-                action = {
-                    "vid": vid,
-                    "title": title,
-                    "type": "DUPLICATE_NO_TARGET",
-                    "remove": [playlist]
-                }
-                from apply_maintenance import record_history
-                action_id = record_history(action)
-                append_agent_log(f"History recorded. Action ID: {action_id}")
+                append_agent_log(f"[{i+1}/{total}] Deleting: {url}...")
                 
-                # Send Discord report
+                success = False
                 try:
-                    from apply_maintenance import send_discord_history_report
-                    send_discord_history_report([{**action, "action_id": action_id}])
-                except Exception as ex:
-                    append_agent_log(f"Discord report fail: {ex}")
-                
-                # Update cache
-                update_cache_for_delete(url, playlist)
-            else:
-                append_agent_log(f"Failed to delete: {url}")
-                
-            time.sleep(1)
+                    playlist_item_id = get_playlist_item_id_from_cache(url, playlist, user_id)
+                    if not playlist_item_id:
+                        raise ValueError(f"playlistItem ID for '{url}' not found in '{playlist}'")
+                    success = youtube_api.remove_video_from_playlist(user_id, playlist_item_id)
+                except Exception as e:
+                    append_agent_log(f"Error deleting {url}: {e}")
+                    
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully deleted {url}.")
+                    
+                    title = find_title_in_cache(url, playlist, user_id)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "DUPLICATE_NO_TARGET",
+                        "remove": [playlist]
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action, user_id)
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except: pass
+                    
+                    update_cache_for_delete(url, playlist, user_id)
+                else:
+                    append_agent_log(f"Failed to delete: {url}")
+                    
+            append_agent_log(f"Batch delete completed. Successfully deleted {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Batch delete completed. Deleted {success_count}/{total} videos from '{playlist}'.")
+        except Exception as e:
+            append_agent_log(f"Fatal error in API batch delete: {e}")
+            scheduler.send_webhook_notification(f"Batch delete failed: {e}", is_error=True)
+        finally:
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
+    else:
+        driver = None
+        try:
+            driver = get_browser()
+            success_count = 0
             
-        append_agent_log(f"Batch delete completed. Successfully deleted {success_count} of {total} videos.")
-        scheduler.send_webhook_notification(f"Batch delete completed. Deleted {success_count}/{total} videos from '{playlist}'.")
-        
-    except Exception as e:
-        append_agent_log(f"Fatal error in batch delete: {e}")
-        scheduler.send_webhook_notification(f"Batch delete failed: {e}", is_error=True)
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        
-        with task_manager.lock:
-            task_manager.active_job = None
-            with scheduler.job_lock:
-                scheduler.active_job = None
+            for i, url in enumerate(video_urls):
+                current_job_name = f"Batch Delete ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
+                append_agent_log(f"[{i+1}/{total}] Deleting: {url}...")
+                
+                success = False
+                try:
+                    success = remove_video_from_playlist(url, playlist, driver=driver)
+                except Exception as e:
+                    append_agent_log(f"Error deleting {url}: {e}")
+                
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully deleted {url}.")
+                    
+                    vid = extract_video_id(url)
+                    title = find_title_in_cache(url, playlist)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "DUPLICATE_NO_TARGET",
+                        "remove": [playlist]
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action)
+                    append_agent_log(f"History recorded. Action ID: {action_id}")
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except Exception as ex:
+                        append_agent_log(f"Discord report fail: {ex}")
+                    
+                    update_cache_for_delete(url, playlist)
+                else:
+                    append_agent_log(f"Failed to delete: {url}")
+                    
+                time.sleep(1)
+                
+            append_agent_log(f"Batch delete completed. Successfully deleted {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Batch delete completed. Deleted {success_count}/{total} videos from '{playlist}'.")
+            
+        except Exception as e:
+            append_agent_log(f"Fatal error in batch delete: {e}")
+            scheduler.send_webhook_notification(f"Batch delete failed: {e}", is_error=True)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
 
-def execute_multi_source_move_background(items: List[dict], target_playlist: str):
+def execute_multi_source_move_background(items: List[dict], target_playlist: str, user_id=None):
     total = len(items)
-    append_agent_log(f"Starting multi-source batch move of {total} videos to '{target_playlist}'.")
+    append_agent_log(f"Starting multi-source batch move of {total} videos to '{target_playlist}' (user_id={user_id}).")
     
-    driver = None
-    try:
-        driver = get_browser()
+    if is_oauth_configured() and user_id is not None:
+        import youtube_api
         success_count = 0
-        
-        for i, item in enumerate(items):
-            url = item["video_url"]
-            source_playlist = item["source_playlist"]
-            
-            current_job_name = f"Multi-Source Move ({i+1}/{total})"
-            with task_manager.lock:
-                scheduler.active_job = current_job_name
-                task_manager.active_job = current_job_name
-            
-            append_agent_log(f"[{i+1}/{total}] Moving from '{source_playlist}' to '{target_playlist}': {url}...")
-            
-            success = False
-            try:
-                success = move_video(url, source_playlist, target_playlist, driver=driver)
-            except Exception as e:
-                append_agent_log(f"Error moving {url}: {e}")
-            
-            if success:
-                success_count += 1
-                append_agent_log(f"Successfully moved {url}.")
+        try:
+            target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
+            if not target_playlist_id:
+                raise ValueError(f"Target playlist '{target_playlist}' not found in user cache")
                 
-                # Record history
+            for i, item in enumerate(items):
+                url = item["video_url"]
+                source_playlist = item["source_playlist"]
+                
+                current_job_name = f"Multi-Source Move ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
                 vid = extract_video_id(url)
-                title = find_title_in_cache(url, source_playlist)
-                action = {
-                    "vid": vid,
-                    "title": title,
-                    "type": "MISPLACED",
-                    "from": [source_playlist],
-                    "to": target_playlist
-                }
-                from apply_maintenance import record_history
-                action_id = record_history(action)
+                append_agent_log(f"[{i+1}/{total}] Moving from '{source_playlist}' to '{target_playlist}': {url}...")
                 
-                # Auto-learn rule for manual batch move
+                success = False
                 try:
-                    channel = find_channel_in_cache(url, source_playlist)
-                    if channel and target_playlist.lower() != "watch later":
-                        from apply_maintenance import learn_channel_rule
-                        learn_channel_rule(channel, target_playlist)
-                        append_agent_log(f"Auto-learned rule for batch move: {channel} -> {target_playlist}")
-                except Exception as ex:
-                    append_agent_log(f"Failed to auto-learn rule for batch move: {ex}")
-                
-                try:
-                    from apply_maintenance import send_discord_history_report
-                    send_discord_history_report([{**action, "action_id": action_id}])
-                except Exception as ex:
-                    append_agent_log(f"Discord report fail: {ex}")
-                
-                # Update cache
-                update_cache_for_move(url, source_playlist, target_playlist)
-            else:
-                append_agent_log(f"Failed to move: {url}")
-                
-            time.sleep(1)
+                    source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
+                    if not source_playlist_item_id:
+                        raise ValueError(f"Source item ID for '{url}' not found")
+                    success = youtube_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+                except Exception as e:
+                    append_agent_log(f"Error moving {url}: {e}")
+                    
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully moved {url}.")
+                    
+                    title = find_title_in_cache(url, source_playlist, user_id)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "MISPLACED",
+                        "from": [source_playlist],
+                        "to": target_playlist
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action, user_id)
+                    
+                    # Auto-learn rule for manual batch move
+                    try:
+                        channel = find_channel_in_cache(url, source_playlist, user_id)
+                        if channel and target_playlist.lower() != "watch later":
+                            db_helper.save_user_rule(user_id, channel, target_playlist)
+                            append_agent_log(f"Auto-learned rule for batch move: {channel} -> {target_playlist}")
+                    except Exception as ex:
+                        append_agent_log(f"Failed to auto-learn rule for batch move: {ex}")
+                        
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except: pass
+                    
+                    update_cache_for_move(url, source_playlist, target_playlist, user_id)
+                else:
+                    append_agent_log(f"Failed to move: {url}")
+                    
+            append_agent_log(f"Multi-source batch move completed. Successfully moved {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Multi-source batch move completed. Moved {success_count}/{total} videos to '{target_playlist}'.")
+        except Exception as e:
+            append_agent_log(f"Fatal error in API multi-source batch move: {e}")
+            scheduler.send_webhook_notification(f"Multi-source batch move failed: {e}", is_error=True)
+        finally:
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
+    else:
+        driver = None
+        try:
+            driver = get_browser()
+            success_count = 0
             
-        append_agent_log(f"Multi-source batch move completed. Successfully moved {success_count} of {total} videos.")
-        scheduler.send_webhook_notification(f"Multi-source batch move completed. Moved {success_count}/{total} videos to '{target_playlist}'.")
-        
-    except Exception as e:
-        append_agent_log(f"Fatal error in multi-source batch move: {e}")
-        scheduler.send_webhook_notification(f"Multi-source batch move failed: {e}", is_error=True)
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        
-        with task_manager.lock:
-            task_manager.active_job = None
-            with scheduler.job_lock:
-                scheduler.active_job = None
+            for i, item in enumerate(items):
+                url = item["video_url"]
+                source_playlist = item["source_playlist"]
+                
+                current_job_name = f"Multi-Source Move ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
+                append_agent_log(f"[{i+1}/{total}] Moving from '{source_playlist}' to '{target_playlist}': {url}...")
+                
+                success = False
+                try:
+                    success = move_video(url, source_playlist, target_playlist, driver=driver)
+                except Exception as e:
+                    append_agent_log(f"Error moving {url}: {e}")
+                
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully moved {url}.")
+                    
+                    # Record history
+                    vid = extract_video_id(url)
+                    title = find_title_in_cache(url, source_playlist)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "MISPLACED",
+                        "from": [source_playlist],
+                        "to": target_playlist
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action)
+                    
+                    # Auto-learn rule for manual batch move
+                    try:
+                        channel = find_channel_in_cache(url, source_playlist)
+                        if channel and target_playlist.lower() != "watch later":
+                            from apply_maintenance import learn_channel_rule
+                            learn_channel_rule(channel, target_playlist)
+                            append_agent_log(f"Auto-learned rule for batch move: {channel} -> {target_playlist}")
+                    except Exception as ex:
+                        append_agent_log(f"Failed to auto-learn rule for batch move: {ex}")
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except Exception as ex:
+                        append_agent_log(f"Discord report fail: {ex}")
+                    
+                    # Update cache
+                    update_cache_for_move(url, source_playlist, target_playlist)
+                else:
+                    append_agent_log(f"Failed to move: {url}")
+                    
+                time.sleep(1)
+                
+            append_agent_log(f"Multi-source batch move completed. Successfully moved {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Multi-source batch move completed. Moved {success_count}/{total} videos to '{target_playlist}'.")
+            
+        except Exception as e:
+            append_agent_log(f"Fatal error in multi-source batch move: {e}")
+            scheduler.send_webhook_notification(f"Multi-source batch move failed: {e}", is_error=True)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
 
-def execute_multi_source_delete_background(items: List[dict]):
+def execute_multi_source_delete_background(items: List[dict], user_id=None):
     total = len(items)
-    append_agent_log(f"Starting multi-source batch delete of {total} videos.")
+    append_agent_log(f"Starting multi-source batch delete of {total} videos (user_id={user_id}).")
     
-    driver = None
-    try:
-        driver = get_browser()
+    if is_oauth_configured() and user_id is not None:
+        import youtube_api
         success_count = 0
-        
-        for i, item in enumerate(items):
-            url = item["video_url"]
-            playlist = item["source_playlist"]
-            
-            current_job_name = f"Multi-Source Delete ({i+1}/{total})"
-            with task_manager.lock:
-                scheduler.active_job = current_job_name
-                task_manager.active_job = current_job_name
-            
-            append_agent_log(f"[{i+1}/{total}] Deleting from '{playlist}': {url}...")
-            
-            success = False
-            try:
-                success = remove_video_from_playlist(url, playlist, driver=driver)
-            except Exception as e:
-                append_agent_log(f"Error deleting {url}: {e}")
-            
-            if success:
-                success_count += 1
-                append_agent_log(f"Successfully deleted {url}.")
+        try:
+            for i, item in enumerate(items):
+                url = item["video_url"]
+                playlist = item["source_playlist"]
                 
-                # Record history
+                current_job_name = f"Multi-Source Delete ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
                 vid = extract_video_id(url)
-                title = find_title_in_cache(url, playlist)
-                action = {
-                    "vid": vid,
-                    "title": title,
-                    "type": "DUPLICATE_NO_TARGET",
-                    "remove": [playlist]
-                }
-                from apply_maintenance import record_history
-                action_id = record_history(action)
+                append_agent_log(f"[{i+1}/{total}] Deleting from '{playlist}': {url}...")
                 
+                success = False
                 try:
-                    from apply_maintenance import send_discord_history_report
-                    send_discord_history_report([{**action, "action_id": action_id}])
-                except Exception as ex:
-                    append_agent_log(f"Discord report fail: {ex}")
-                
-                # Update cache
-                update_cache_for_delete(url, playlist)
-            else:
-                append_agent_log(f"Failed to delete: {url}")
-                
-            time.sleep(1)
+                    playlist_item_id = get_playlist_item_id_from_cache(url, playlist, user_id)
+                    if not playlist_item_id:
+                        raise ValueError(f"playlistItem ID for '{url}' not found in '{playlist}'")
+                    success = youtube_api.remove_video_from_playlist(user_id, playlist_item_id)
+                except Exception as e:
+                    append_agent_log(f"Error deleting {url}: {e}")
+                    
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully deleted {url}.")
+                    
+                    title = find_title_in_cache(url, playlist, user_id)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "DUPLICATE_NO_TARGET",
+                        "remove": [playlist]
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action, user_id)
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except: pass
+                    
+                    update_cache_for_delete(url, playlist, user_id)
+                else:
+                    append_agent_log(f"Failed to delete: {url}")
+                    
+            append_agent_log(f"Multi-source batch delete completed. Successfully deleted {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Multi-source batch delete completed. Deleted {success_count}/{total} videos.")
+        except Exception as e:
+            append_agent_log(f"Fatal error in API multi-source batch delete: {e}")
+            scheduler.send_webhook_notification(f"Multi-source batch delete failed: {e}", is_error=True)
+        finally:
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
+    else:
+        driver = None
+        try:
+            driver = get_browser()
+            success_count = 0
             
-        append_agent_log(f"Multi-source batch delete completed. Deleted {success_count} of {total} videos.")
-        scheduler.send_webhook_notification(f"Multi-source batch delete completed. Deleted {success_count}/{total} videos.")
-        
-    except Exception as e:
-        append_agent_log(f"Fatal error in multi-source batch delete: {e}")
-        scheduler.send_webhook_notification(f"Multi-source batch delete failed: {e}", is_error=True)
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        
-        with task_manager.lock:
-            task_manager.active_job = None
-            with scheduler.job_lock:
-                scheduler.active_job = None
+            for i, item in enumerate(items):
+                url = item["video_url"]
+                playlist = item["source_playlist"]
+                
+                current_job_name = f"Multi-Source Delete ({i+1}/{total})"
+                with task_manager.lock:
+                    scheduler.active_job = current_job_name
+                    task_manager.active_job = current_job_name
+                
+                append_agent_log(f"[{i+1}/{total}] Deleting from '{playlist}': {url}...")
+                
+                success = False
+                try:
+                    success = remove_video_from_playlist(url, playlist, driver=driver)
+                except Exception as e:
+                    append_agent_log(f"Error deleting {url}: {e}")
+                
+                if success:
+                    success_count += 1
+                    append_agent_log(f"Successfully deleted {url}.")
+                    
+                    # Record history
+                    vid = extract_video_id(url)
+                    title = find_title_in_cache(url, playlist)
+                    action = {
+                        "vid": vid,
+                        "title": title,
+                        "type": "DUPLICATE_NO_TARGET",
+                        "remove": [playlist]
+                    }
+                    from apply_maintenance import record_history
+                    action_id = record_history(action)
+                    
+                    try:
+                        from apply_maintenance import send_discord_history_report
+                        send_discord_history_report([{**action, "action_id": action_id}])
+                    except Exception as ex:
+                        append_agent_log(f"Discord report fail: {ex}")
+                    
+                    # Update cache
+                    update_cache_for_delete(url, playlist)
+                else:
+                    append_agent_log(f"Failed to delete: {url}")
+                    
+                time.sleep(1)
+                
+            append_agent_log(f"Multi-source batch delete completed. Deleted {success_count} of {total} videos.")
+            scheduler.send_webhook_notification(f"Multi-source batch delete completed. Deleted {success_count}/{total} videos.")
+            
+        except Exception as e:
+            append_agent_log(f"Fatal error in multi-source batch delete: {e}")
+            scheduler.send_webhook_notification(f"Multi-source batch delete failed: {e}", is_error=True)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
 
-def execute_remove_duplicates_background(playlist_name: str):
-    append_agent_log(f"Starting duplicate cleanup for playlist '{playlist_name}'.")
+def execute_remove_duplicates_background(playlist_name: str, user_id=None):
+    append_agent_log(f"Starting duplicate cleanup for playlist '{playlist_name}' (user_id={user_id}).")
     
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    if is_oauth_configured() and user_id is not None:
+        report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
+    else:
+        report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+        
     if not os.path.exists(report_path):
-        append_agent_log("Error: playlists_report.json not found.")
+        append_agent_log(f"Error: report file {report_path} not found.")
         return
         
     try:
@@ -835,78 +1271,155 @@ def execute_remove_duplicates_background(playlist_name: str):
         total = len(duplicates)
         append_agent_log(f"Found {total} duplicate videos to resolve in '{playlist_name}'.")
         
-        driver = None
-        try:
-            driver = get_browser()
+        if is_oauth_configured() and user_id is not None:
+            import youtube_api
             success_count = 0
-            
-            for i, url in enumerate(duplicates):
-                current_job_name = f"Clean Dupes ({i+1}/{total})"
-                with task_manager.lock:
-                    scheduler.active_job = current_job_name
-                    task_manager.active_job = current_job_name
+            try:
+                target_playlist_id = get_playlist_id_by_name(playlist_name, user_id)
+                if not target_playlist_id:
+                    raise ValueError(f"Playlist ID for '{playlist_name}' not found")
                     
-                title = next((v["title"] for v in videos if v["url"] == url), "Unknown Video")
-                append_agent_log(f"[{i+1}/{total}] Resolving duplicate for: {title}")
-                
-                try:
-                    if remove_video_from_playlist(url, playlist_name, driver=driver):
-                        time.sleep(2)
-                        if add_video_to_playlist(url, playlist_name, driver=driver):
-                            success_count += 1
-                            append_agent_log(f"Successfully resolved duplicate for '{title}'.")
+                for i, url in enumerate(duplicates):
+                    current_job_name = f"Clean Dupes ({i+1}/{total})"
+                    with task_manager.lock:
+                        scheduler.active_job = current_job_name
+                        task_manager.active_job = current_job_name
+                        
+                    title = next((v["title"] for v in videos if v["url"] == url), "Unknown Video")
+                    append_agent_log(f"[{i+1}/{total}] Resolving duplicate for: {title}")
+                    
+                    try:
+                        matching_items = [v for v in videos if v["url"] == url]
+                        if len(matching_items) > 1:
+                            deleted_all = True
+                            for item in matching_items:
+                                item_id = item.get("playlist_item_id")
+                                if item_id:
+                                    try:
+                                        youtube_api.remove_video_from_playlist(user_id, item_id)
+                                    except Exception as ex:
+                                        append_agent_log(f"Error removing item {item_id}: {ex}")
+                                        deleted_all = False
                             
-                            # Record history
                             vid = extract_video_id(url)
-                            action = {
-                                "vid": vid,
-                                "title": title,
-                                "type": "DUPLICATE",
-                                "keep": playlist_name,
-                                "remove": [playlist_name]
-                            }
-                            from apply_maintenance import record_history
-                            action_id = record_history(action)
-                            
-                            try:
-                                from apply_maintenance import send_discord_history_report
-                                send_discord_history_report([{**action, "action_id": action_id}])
-                            except Exception as ex:
-                                append_agent_log(f"Discord report fail: {ex}")
-                        else:
-                            append_agent_log(f"Failed to re-add '{title}' to '{playlist_name}'.")
-                    else:
-                        append_agent_log(f"Failed to remove '{title}' from '{playlist_name}'.")
-                except Exception as e:
-                    append_agent_log(f"Error resolving duplicate for '{title}': {e}")
+                            if deleted_all:
+                                youtube_api.add_video_to_playlist(user_id, target_playlist_id, vid)
+                                success_count += 1
+                                append_agent_log(f"Successfully resolved duplicate for '{title}' via API.")
+                                
+                                action = {
+                                    "vid": vid,
+                                    "title": title,
+                                    "type": "DUPLICATE",
+                                    "keep": playlist_name,
+                                    "remove": [playlist_name]
+                                }
+                                from apply_maintenance import record_history
+                                action_id = record_history(action, user_id)
+                                try:
+                                    from apply_maintenance import send_discord_history_report
+                                    send_discord_history_report([{**action, "action_id": action_id}])
+                                except: pass
+                    except Exception as e:
+                        append_agent_log(f"Error resolving duplicate for '{title}': {e}")
+                
+                append_agent_log(f"Duplicate cleanup completed. Successfully resolved {success_count} of {total} duplicates in '{playlist_name}'.")
+                
+                append_agent_log(f"Refreshing live video list for '{playlist_name}'...")
+                refreshed_videos = youtube_api.list_videos_in_playlist(user_id, target_playlist_id)
+                with open(report_path, "r", encoding="utf-8") as f:
+                    report = json.load(f)
+                for p in report:
+                    if p["name"].lower() == playlist_name.lower():
+                        p["videos"] = refreshed_videos
+                        p["video_count"] = len(refreshed_videos)
+                        break
+                with open(report_path, "w", encoding="utf-8") as f:
+                    json.dump(report, f, indent=2, ensure_ascii=False)
                     
-                time.sleep(1)
+                scheduler.send_webhook_notification(f"Duplicate cleanup completed for '{playlist_name}'. Resolved {success_count}/{total} duplicates.")
+            except Exception as e:
+                append_agent_log(f"Fatal error in API duplicate cleanup: {e}")
+                scheduler.send_webhook_notification(f"Duplicate cleanup failed: {e}", is_error=True)
+            finally:
+                with task_manager.lock:
+                    task_manager.active_job = None
+                    with scheduler.job_lock:
+                        scheduler.active_job = None
+        else:
+            driver = None
+            try:
+                driver = get_browser()
+                success_count = 0
                 
-            append_agent_log(f"Duplicate cleanup completed. Successfully resolved {success_count} of {total} duplicates in '{playlist_name}'.")
-            
-            # Refresh local cache
-            append_agent_log(f"Refreshing live video list for '{playlist_name}'...")
-            refreshed_videos = list_videos_in_playlist(target_playlist["url"], driver=driver)
-            
-            with open(report_path, "r", encoding="utf-8") as f:
-                report = json.load(f)
-            for p in report:
-                if p["name"].lower() == playlist_name.lower():
-                    p["videos"] = refreshed_videos
-                    p["video_count"] = len(refreshed_videos)
-                    break
-            with open(report_path, "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2, ensure_ascii=False)
+                for i, url in enumerate(duplicates):
+                    current_job_name = f"Clean Dupes ({i+1}/{total})"
+                    with task_manager.lock:
+                        scheduler.active_job = current_job_name
+                        task_manager.active_job = current_job_name
+                        
+                    title = next((v["title"] for v in videos if v["url"] == url), "Unknown Video")
+                    append_agent_log(f"[{i+1}/{total}] Resolving duplicate for: {title}")
+                    
+                    try:
+                        if remove_video_from_playlist(url, playlist_name, driver=driver):
+                            time.sleep(2)
+                            if add_video_to_playlist(url, playlist_name, driver=driver):
+                                success_count += 1
+                                append_agent_log(f"Successfully resolved duplicate for '{title}'.")
+                                
+                                vid = extract_video_id(url)
+                                action = {
+                                    "vid": vid,
+                                    "title": title,
+                                    "type": "DUPLICATE",
+                                    "keep": playlist_name,
+                                    "remove": [playlist_name]
+                                }
+                                from apply_maintenance import record_history
+                                action_id = record_history(action)
+                                
+                                try:
+                                    from apply_maintenance import send_discord_history_report
+                                    send_discord_history_report([{**action, "action_id": action_id}])
+                                except Exception as ex:
+                                    append_agent_log(f"Discord report fail: {ex}")
+                            else:
+                                append_agent_log(f"Failed to re-add '{title}' to '{playlist_name}'.")
+                        else:
+                            append_agent_log(f"Failed to remove '{title}' from '{playlist_name}'.")
+                    except Exception as e:
+                        append_agent_log(f"Error resolving duplicate for '{title}': {e}")
+                        
+                    time.sleep(1)
+                    
+                append_agent_log(f"Duplicate cleanup completed. Successfully resolved {success_count} of {total} duplicates in '{playlist_name}'.")
                 
-            scheduler.send_webhook_notification(f"Duplicate cleanup completed for '{playlist_name}'. Resolved {success_count}/{total} duplicates.")
-        except Exception as e:
-            append_agent_log(f"Fatal error in duplicate cleanup: {e}")
-            scheduler.send_webhook_notification(f"Duplicate cleanup failed: {e}", is_error=True)
-        finally:
-            if driver:
-                try: driver.quit()
-                except: pass
+                refreshed_videos = list_videos_in_playlist(target_playlist["url"], driver=driver)
                 
+                with open(report_path, "r", encoding="utf-8") as f:
+                    report = json.load(f)
+                for p in report:
+                    if p["name"].lower() == playlist_name.lower():
+                        p["videos"] = refreshed_videos
+                        p["video_count"] = len(refreshed_videos)
+                        break
+                with open(report_path, "w", encoding="utf-8") as f:
+                    json.dump(report, f, indent=2, ensure_ascii=False)
+                    
+                scheduler.send_webhook_notification(f"Duplicate cleanup completed for '{playlist_name}'. Resolved {success_count}/{total} duplicates.")
+            except Exception as e:
+                append_agent_log(f"Fatal error in duplicate cleanup: {e}")
+                scheduler.send_webhook_notification(f"Duplicate cleanup failed: {e}", is_error=True)
+            finally:
+                if driver:
+                    try: driver.quit()
+                    except: pass
+                    
+            with task_manager.lock:
+                task_manager.active_job = None
+                with scheduler.job_lock:
+                    scheduler.active_job = None
     except Exception as e:
         append_agent_log(f"Error in duplicate cleanup script: {e}")
     finally:
@@ -916,9 +1429,24 @@ def execute_remove_duplicates_background(playlist_name: str):
                 scheduler.active_job = None
 
 @app.get("/api/playlists/videos")
-def get_playlist_videos(playlist_url: str, refresh: bool = False):
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+def get_playlist_videos(playlist_url: str, refresh: bool = False, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    report_path = get_user_file_path("playlists_report.json", user)
     
+    playlist_id = None
+    if "list=" in playlist_url:
+        playlist_id = playlist_url.split("list=")[1].split("&")[0]
+    else:
+        playlist_id = playlist_url
+
+    if is_oauth_configured() and playlist_id:
+        import youtube_api
+        try:
+            videos = youtube_api.list_videos_in_playlist(user_id, playlist_id)
+            return {"videos": videos}
+        except Exception as e:
+            print(f"YouTube API failed to fetch videos, falling back to cache: {e}")
+
     need_refresh = refresh
     cached_videos = []
     playlist_name = ""
@@ -928,7 +1456,7 @@ def get_playlist_videos(playlist_url: str, refresh: bool = False):
             with open(report_path, "r", encoding="utf-8") as f:
                 report = json.load(f)
             for p in report:
-                if p["url"] == playlist_url or playlist_url in p["url"]:
+                if p["url"] == playlist_url or playlist_url in p["url"] or p.get("id") == playlist_id:
                     cached_videos = p.get("videos", [])
                     playlist_name = p["name"]
                     break
@@ -1041,11 +1569,12 @@ def get_playlist_videos(playlist_url: str, refresh: bool = False):
         return {"videos": cached_videos}
 
 @app.post("/api/playlists/batch-move")
-def api_batch_move(req: BatchMoveRequest):
+def api_batch_move(req: BatchMoveRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     success, msg = task_manager.run_function(
         f"Batch Move ({len(req.video_urls)} items)",
         execute_batch_move_background,
-        (req.video_urls, req.source_playlist, req.target_playlist)
+        (req.video_urls, req.source_playlist, req.target_playlist, user_id)
     )
     if not success:
         raise HTTPException(status_code=400, detail=msg)
@@ -1086,23 +1615,48 @@ def update_cache_move_video(video_url, source_name, target_name):
     except Exception as e:
         print(f"Error updating report cache: {e}")
 
-def execute_move_single_background(video_url: str, source_playlist: str, target_playlist: str):
+def execute_move_single_background(video_url: str, source_playlist: str, target_playlist: str, user_id=None):
     vid = extract_video_id(video_url)
-    append_agent_log(f"Starting single move of {video_url} ({vid}) from '{source_playlist}' to '{target_playlist}'.")
-    driver = None
+    append_agent_log(f"Starting single move of {video_url} ({vid}) from '{source_playlist}' to '{target_playlist}' (user_id={user_id}).")
+    
+    current_job_name = f"Move Single ({vid})"
+    with task_manager.lock:
+        scheduler.active_job = current_job_name
+        task_manager.active_job = current_job_name
+        
+    success = False
+    if is_oauth_configured() and user_id is not None:
+        import youtube_api
+        try:
+            target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
+            source_playlist_item_id = get_playlist_item_id_from_cache(video_url, source_playlist, user_id)
+            if not target_playlist_id:
+                raise ValueError(f"Target playlist '{target_playlist}' not found in user cache")
+            if not source_playlist_item_id:
+                raise ValueError(f"Source item ID for '{video_url}' not found in '{source_playlist}'")
+            success = youtube_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+        except Exception as e:
+            append_agent_log(f"OAuth single move failed: {e}")
+            success = False
+    else:
+        driver = None
+        try:
+            driver = get_browser()
+            success = move_video(video_url, source_playlist, target_playlist, driver=driver)
+        except Exception as e:
+            append_agent_log(f"Browser single move failed: {e}")
+            success = False
+        finally:
+            if driver:
+                try: driver.quit()
+                except: pass
+
     try:
-        driver = get_browser()
-        current_job_name = f"Move Single ({vid})"
-        with task_manager.lock:
-            scheduler.active_job = current_job_name
-            task_manager.active_job = current_job_name
-            
-        success = move_video(video_url, source_playlist, target_playlist, driver=driver)
         if success:
             append_agent_log(f"Successfully moved single video {video_url}.")
             
             # Record to history
-            title = find_title_in_cache(video_url, source_playlist)
+            title = find_title_in_cache(video_url, source_playlist, user_id)
             action = {
                 "vid": vid,
                 "title": title,
@@ -1111,15 +1665,18 @@ def execute_move_single_background(video_url: str, source_playlist: str, target_
                 "to": target_playlist
             }
             from apply_maintenance import record_history
-            action_id = record_history(action)
+            action_id = record_history(action, user_id)
             append_agent_log(f"History recorded. Action ID: {action_id}")
             
             # Auto-learn rule for manual single move
             try:
-                channel = find_channel_in_cache(video_url, source_playlist)
+                channel = find_channel_in_cache(video_url, source_playlist, user_id)
                 if channel and target_playlist.lower() != "watch later":
-                    from apply_maintenance import learn_channel_rule
-                    learn_channel_rule(channel, target_playlist)
+                    if not is_oauth_configured():
+                        from apply_maintenance import learn_channel_rule
+                        learn_channel_rule(channel, target_playlist)
+                    else:
+                        db_helper.save_user_rule(user_id, channel, target_playlist)
                     append_agent_log(f"Auto-learned rule for single move: {channel} -> {target_playlist}")
             except Exception as ex:
                 append_agent_log(f"Failed to auto-learn rule for single move: {ex}")
@@ -1132,74 +1689,74 @@ def execute_move_single_background(video_url: str, source_playlist: str, target_
                 append_agent_log(f"Discord report fail: {ex}")
                 
             # Update cache
-            update_cache_for_move(video_url, source_playlist, target_playlist)
+            update_cache_for_move(video_url, source_playlist, target_playlist, user_id)
         else:
             append_agent_log(f"Failed to move single video: {video_url}")
     except Exception as e:
         append_agent_log(f"Fatal error in single move: {e}")
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
         with task_manager.lock:
             task_manager.active_job = None
             with scheduler.job_lock:
                 scheduler.active_job = None
 
 @app.post("/api/playlists/move-single")
-def api_move_single(req: SingleMoveRequest):
+def api_move_single(req: SingleMoveRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     success, msg = task_manager.run_function(
         f"Move Single ({extract_video_id(req.video_url)})",
         execute_move_single_background,
-        (req.video_url, req.source_playlist, req.target_playlist)
+        (req.video_url, req.source_playlist, req.target_playlist, user_id)
     )
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": "Single move successfully added to queue."}
 
 @app.post("/api/playlists/batch-delete")
-def api_batch_delete(req: BatchDeleteRequest):
+def api_batch_delete(req: BatchDeleteRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     success, msg = task_manager.run_function(
         f"Batch Delete ({len(req.video_urls)} items)",
         execute_batch_delete_background,
-        (req.video_urls, req.playlist)
+        (req.video_urls, req.playlist, user_id)
     )
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": "Batch delete successfully added to queue."}
 
 @app.post("/api/playlists/batch-move-multi-source")
-def api_batch_move_multi_source(req: MultiSourceMoveRequest):
+def api_batch_move_multi_source(req: MultiSourceMoveRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     items_list = [item.dict() for item in req.items]
     success, msg = task_manager.run_function(
         f"Multi-Source Move ({len(req.items)} items)",
         execute_multi_source_move_background,
-        (items_list, req.target_playlist)
+        (items_list, req.target_playlist, user_id)
     )
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": "Multi-source batch move successfully added to queue."}
 
 @app.post("/api/playlists/batch-delete-multi-source")
-def api_batch_delete_multi_source(req: MultiSourceDeleteRequest):
+def api_batch_delete_multi_source(req: MultiSourceDeleteRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     items_list = [item.dict() for item in req.items]
     success, msg = task_manager.run_function(
         f"Multi-Source Delete ({len(req.items)} items)",
         execute_multi_source_delete_background,
-        (items_list,)
+        (items_list, user_id)
     )
     if not success:
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": "Multi-source batch delete successfully added to queue."}
 
 @app.post("/api/playlists/remove-duplicates")
-def api_remove_duplicates(req: RemoveDuplicatesRequest):
+def api_remove_duplicates(req: RemoveDuplicatesRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     success, msg = task_manager.run_function(
         f"Clean Dupes ({req.playlist_name})",
         execute_remove_duplicates_background,
-        (req.playlist_name,)
+        (req.playlist_name, user_id)
     )
     if not success:
         raise HTTPException(status_code=400, detail=msg)
@@ -1207,10 +1764,10 @@ def api_remove_duplicates(req: RemoveDuplicatesRequest):
 
 
 @app.get("/api/rules")
-def get_rules():
-    rules_md = ""
-    channels_txt = ""
+def get_rules(user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     
+    rules_md = ""
     rules_path = os.path.join(os.path.dirname(__file__), "youtube_rules.promptinclude.md")
     if os.path.exists(rules_path):
         try:
@@ -1218,38 +1775,63 @@ def get_rules():
                 rules_md = f.read()
         except: pass
         
-    chan_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
-    if os.path.exists(chan_path):
-        try:
-            with open(chan_path, "r", encoding="utf-8") as f:
-                channels_txt = f.read()
-        except: pass
+    if not is_oauth_configured():
+        channels_txt = ""
+        chan_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
+        if os.path.exists(chan_path):
+            try:
+                with open(chan_path, "r", encoding="utf-8") as f:
+                    channels_txt = f.read()
+            except: pass
+    else:
+        user_rules = db_helper.load_user_rules(user_id)
+        channels_txt = "\n".join(f"{ch} : {cat}" for ch, cat in user_rules.items()) + "\n"
         
     return {"rules_md": rules_md, "channels_txt": channels_txt}
 
 @app.post("/api/rules")
-def save_rules(req: RulesSaveRequest):
+def save_rules(req: RulesSaveRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     try:
         rules_path = os.path.join(os.path.dirname(__file__), "youtube_rules.promptinclude.md")
         with open(rules_path, "w", encoding="utf-8") as f:
             f.write(req.rules_md)
             
-        chan_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
-        with open(chan_path, "w", encoding="utf-8") as f:
-            f.write(req.channels_txt)
+        if not is_oauth_configured():
+            chan_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
+            with open(chan_path, "w", encoding="utf-8") as f:
+                f.write(req.channels_txt)
+        else:
+            conn = db_helper.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM user_rules WHERE user_id = ?", (user_id,))
+            
+            rules = []
+            for line in req.channels_txt.splitlines():
+                if ":" in line:
+                    parts = line.strip().split(":")
+                    if len(parts) == 2:
+                        rules.append((user_id, parts[0].strip(), parts[1].strip()))
+            if rules:
+                cursor.executemany("""
+                INSERT OR REPLACE INTO user_rules (user_id, channel_name, target_category) VALUES (?, ?, ?)
+                """, rules)
+            conn.commit()
+            conn.close()
             
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/rules/add-channel")
-def add_channel_rule(req: AddChannelRuleRequest):
-    chan_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
-    if not os.path.exists(chan_path):
-        raise HTTPException(status_code=404, detail="Channel map file not found")
+def add_channel_rule(req: AddChannelRuleRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
     try:
-        from apply_maintenance import learn_channel_rule
-        learn_channel_rule(req.channel, req.category)
+        if not is_oauth_configured():
+            from apply_maintenance import learn_channel_rule
+            learn_channel_rule(req.channel, req.category)
+        else:
+            db_helper.save_user_rule(user_id, req.channel, req.category)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1550,8 +2132,17 @@ def api_batch_discard_maintenance(req: BatchMaintenanceRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/run-scan")
-def run_scan():
-    success, msg = task_manager.run_task("scan", ["cli.py", "scan"])
+def run_scan(user=Depends(get_current_user)):
+    if not is_oauth_configured():
+        success, msg = task_manager.run_task("scan", ["cli.py", "scan"])
+    else:
+        user_id = user.get("user_id") if "user_id" in user else user.get("id")
+        import youtube_api
+        success, msg = task_manager.run_function(
+            "scan",
+            youtube_api.run_api_scan_and_save,
+            (user_id,)
+        )
     if success:
         return {"success": True, "message": "Starting scan in background..."}
     else:
