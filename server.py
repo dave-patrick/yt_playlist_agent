@@ -1838,8 +1838,8 @@ def add_channel_rule(req: AddChannelRuleRequest, user=Depends(get_current_user))
 
 
 @app.get("/api/maintenance")
-def get_maintenance():
-    maint_path = os.path.join(os.path.dirname(__file__), "maintenance_actions.json")
+def get_maintenance(user=Depends(get_current_user)):
+    maint_path = get_user_file_path("maintenance_actions.json", user)
     if os.path.exists(maint_path):
         try:
             with open(maint_path, "r", encoding="utf-8") as f:
@@ -1848,24 +1848,138 @@ def get_maintenance():
     return []
 
 @app.post("/api/maintenance/generate")
-def api_generate_maintenance():
-    success, msg = task_manager.run_task("generate_maintenance", ["generate_maintenance.py"])
+def api_generate_maintenance(user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    args = [sys.executable, "generate_maintenance.py"]
+    if is_oauth_configured():
+        args.extend(["--user-id", str(user_id)])
+    success, msg = task_manager.run_task("generate_maintenance", args)
     if success:
         return {"success": True, "message": "Regenerating queue in background..."}
     else:
         raise HTTPException(status_code=400, detail=msg)
 
-@app.post("/api/maintenance/apply")
-def api_apply_maintenance(req: MaintenanceApplyRequest):
-    args = ["apply_maintenance.py"]
-    if req.force:
-        args.append("--force")
+def execute_apply_maintenance_background(user_id, force=False):
+    append_agent_log(f"Starting API-based maintenance queue execution (user_id={user_id}).")
+    
+    import youtube_api
+    maint_path = os.path.join(os.path.dirname(__file__), f"maintenance_actions_{user_id}.json")
+    if not os.path.exists(maint_path):
+        append_agent_log("No maintenance queue found.")
+        return
         
-    success, msg = task_manager.run_task("apply_maintenance", args)
-    if success:
-        return {"success": True, "message": "Executing maintenance in background..."}
+    try:
+        with open(maint_path, "r", encoding="utf-8") as f:
+            actions = json.load(f)
+            
+        if not actions:
+            append_agent_log("Maintenance queue is empty.")
+            return
+            
+        total = len(actions)
+        append_agent_log(f"Found {total} actions to apply.")
+        
+        success_count = 0
+        applied_actions = []
+        
+        while actions:
+            a = actions[0]
+            vid = a.get("vid")
+            url = f"https://www.youtube.com/watch?v={vid}"
+            title = a.get("title", "Unknown")
+            action_type = a.get("type")
+            
+            current_job_name = f"Apply Maint ({success_count+1}/{total})"
+            with task_manager.lock:
+                scheduler.active_job = current_job_name
+                task_manager.active_job = current_job_name
+                
+            success = False
+            try:
+                if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                    remove_playlists = a.get("remove", [])
+                    for p in remove_playlists:
+                        playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
+                        if playlist_item_id:
+                            youtube_api.remove_video_from_playlist(user_id, playlist_item_id)
+                            update_cache_for_delete(url, p, user_id)
+                            success = True
+                elif action_type == "MISPLACED":
+                    source_playlist = a.get("from", [None])[0]
+                    target_playlist = a.get("to")
+                    target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
+                    source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
+                    if target_playlist_id and source_playlist_item_id:
+                        youtube_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+                        update_cache_for_move(url, source_playlist, target_playlist, user_id)
+                        success = True
+            except Exception as e:
+                append_agent_log(f"Error applying action for {title}: {e}")
+                success = False
+                
+            if success:
+                success_count += 1
+                applied_actions.append(a)
+                append_agent_log(f"Successfully applied action for: {title}")
+                
+                from apply_maintenance import record_history
+                action_id = record_history(a, user_id)
+                a["action_id"] = action_id
+                
+                channel_name = a.get("channel")
+                category_name = a.get("to") or a.get("keep")
+                if channel_name and category_name:
+                    db_helper.save_user_rule(user_id, channel_name, category_name)
+            else:
+                append_agent_log(f"Failed to apply action for: {title}")
+                
+            actions.pop(0)
+            with open(maint_path, "w", encoding="utf-8") as f:
+                json.dump(actions, f, indent=2, ensure_ascii=False)
+                
+            time.sleep(1)
+            
+        append_agent_log(f"Maintenance completed. Successfully applied {success_count} of {total} actions.")
+        
+        if applied_actions:
+            try:
+                from apply_maintenance import send_discord_history_report
+                send_discord_history_report(applied_actions)
+            except Exception as ex:
+                append_agent_log(f"Failed to send Discord history report: {ex}")
+                
+        scheduler.send_webhook_notification(f"Maintenance queue completed. Applied {success_count}/{total} actions.")
+        
+    except Exception as e:
+        append_agent_log(f"Fatal error in maintenance execution: {e}")
+        scheduler.send_webhook_notification(f"Maintenance execution failed: {e}", is_error=True)
+    finally:
+        with task_manager.lock:
+            task_manager.active_job = None
+            with scheduler.job_lock:
+                scheduler.active_job = None
+
+@app.post("/api/maintenance/apply")
+def api_apply_maintenance(req: MaintenanceApplyRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    if is_oauth_configured():
+        success, msg = task_manager.run_function(
+            "Apply Maintenance Queue",
+            execute_apply_maintenance_background,
+            (user_id, req.force)
+        )
+        if not success:
+            raise HTTPException(status_code=400, detail=msg)
+        return {"success": True, "message": "Executing maintenance queue in background..."}
     else:
-        raise HTTPException(status_code=400, detail=msg)
+        args = ["apply_maintenance.py"]
+        if req.force:
+            args.append("--force")
+        success, msg = task_manager.run_task("apply_maintenance", args)
+        if success:
+            return {"success": True, "message": "Executing maintenance in background..."}
+        else:
+            raise HTTPException(status_code=400, detail=msg)
 
 @app.post("/api/maintenance/update-target")
 def update_maint_target(req: UpdateMaintTargetRequest):

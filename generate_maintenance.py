@@ -1,43 +1,64 @@
+import sys
 import json
 import re
 import os
 from collections import defaultdict
 
+# Global user_id parsing
+user_id = None
+for arg in sys.argv:
+    if arg.startswith("--user-id="):
+        user_id = arg.split("=")[1]
+    elif arg == "--user-id" and sys.argv.index(arg) + 1 < len(sys.argv):
+        user_id = sys.argv[sys.argv.index(arg) + 1]
+
 def parse_rules():
     channel_map = {}
-    try:
-        with open("youtube_category_channel_map.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                if ":" in line:
-                    parts = line.strip().split(":")
-                    if len(parts) == 2:
-                        channel_map[parts[0].strip()] = parts[1].strip()
-    except Exception as e:
-        print(f"Warning: Could not read channel map: {e}")
-        
     category_to_id = {}
+    
+    if user_id:
+        try:
+            import db_helper
+            db_helper.import_default_rules_if_empty(user_id)
+            channel_map = db_helper.load_user_rules(user_id)
+        except Exception as e:
+            print(f"Warning: Could not load user rules from DB: {e}")
+    else:
+        try:
+            with open("youtube_category_channel_map.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    if ":" in line:
+                        parts = line.strip().split(":")
+                        if len(parts) == 2:
+                            channel_map[parts[0].strip()] = parts[1].strip()
+        except Exception as e:
+            print(f"Warning: Could not read channel map: {e}")
+            
     try:
-        with open("youtube_rules.promptinclude.md", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip().startswith("|") and "`PL" in line:
-                    parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 4:
-                        cat_name = parts[2].strip()
-                        category_to_id[cat_name] = True # Just mark it as valid
+        rules_path = os.path.join(os.path.dirname(__file__), "youtube_rules.promptinclude.md")
+        if os.path.exists(rules_path):
+            with open(rules_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith("|") and "`PL" in line:
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) >= 4:
+                            cat_name = parts[2].strip()
+                            category_to_id[cat_name] = True # Just mark it as valid
     except Exception as e:
         print(f"Warning: Could not read rules: {e}")
         
     # Also load from playlists_urls.json if it exists to support all active playlists
-    if os.path.exists("playlists_urls.json"):
+    urls_path = f"playlists_report_{user_id}.json" if user_id else "playlists_report.json"
+    if os.path.exists(urls_path):
         try:
-            with open("playlists_urls.json", "r", encoding="utf-8") as f:
+            with open(urls_path, "r", encoding="utf-8") as f:
                 urls = json.load(f)
                 for item in urls:
                     name = item.get("name")
                     if name:
                         category_to_id[name] = True
         except Exception as e:
-            print(f"Warning: Could not read playlists_urls.json: {e}")
+            print(f"Warning: Could not read {urls_path}: {e}")
             
     return channel_map, category_to_id
 
@@ -45,7 +66,7 @@ from ai_classifier import classify_video_with_ai
 
 def load_ai_classifications():
     classifications = {}
-    class_path = "ai_classifications.json"
+    class_path = f"ai_classifications_{user_id}.json" if user_id else "ai_classifications.json"
     if os.path.exists(class_path):
         try:
             with open(class_path, "r", encoding="utf-8") as f:
@@ -55,7 +76,7 @@ def load_ai_classifications():
                     if vid:
                         classifications[vid] = c
         except Exception as e:
-            print(f"Warning: Could not read ai_classifications.json: {e}")
+            print(f"Warning: Could not read {class_path}: {e}")
     return classifications
 
 def get_target_cat(title, channel, channel_map, vid=None, ai_classifications=None, allow_ai=True):
@@ -140,15 +161,16 @@ def get_target_cat(title, channel, channel_map, vid=None, ai_classifications=Non
             
     # AI Fallback (logs to history as pending, but does not execute yet)
     if allow_ai:
-        classify_video_with_ai(title, channel, vid=vid)
+        classify_video_with_ai(title, channel, vid=vid, user_id=user_id)
     return None, False
 
 def generate_maintenance():
-    if not os.path.exists("playlists_report.json"):
-        print("playlists_report.json not found. Run 'python cli.py scan' first.")
+    report_file = f"playlists_report_{user_id}.json" if user_id else "playlists_report.json"
+    if not os.path.exists(report_file):
+        print(f"{report_file} not found. Run scan first.")
         return
 
-    with open("playlists_report.json", "r", encoding="utf-8") as f:
+    with open(report_file, "r", encoding="utf-8") as f:
         playlists = json.load(f)
 
     channel_map, valid_cats = parse_rules()
@@ -171,9 +193,10 @@ def generate_maintenance():
     actions = []
     total_vids = len(vid_to_playlists)
     
+    progress_file = f"generate_progress_{user_id}.json" if user_id else "generate_progress.json"
     # Write initial progress
     try:
-        with open("generate_progress.json", "w") as f:
+        with open(progress_file, "w") as f:
             json.dump({"current": 0, "total": total_vids}, f)
     except:
         pass
@@ -181,7 +204,7 @@ def generate_maintenance():
     for idx, (vid, p_list) in enumerate(vid_to_playlists.items()):
         # Write progress
         try:
-            with open("generate_progress.json", "w") as f:
+            with open(progress_file, "w") as f:
                 json.dump({"current": idx + 1, "total": total_vids}, f)
         except:
             pass
@@ -249,13 +272,14 @@ def generate_maintenance():
     # Filter out empty remove lists
     actions = [a for a in actions if a.get('remove') != [] or a.get('type') == 'MISPLACED']
 
-    with open("maintenance_actions.json", "w", encoding="utf-8") as f:
+    maint_file = f"maintenance_actions_{user_id}.json" if user_id else "maintenance_actions.json"
+    with open(maint_file, "w", encoding="utf-8") as f:
         json.dump(actions, f, indent=2, ensure_ascii=False)
     
     # Clean up progress file
-    if os.path.exists("generate_progress.json"):
+    if os.path.exists(progress_file):
         try:
-            os.remove("generate_progress.json")
+            os.remove(progress_file)
         except:
             pass
             

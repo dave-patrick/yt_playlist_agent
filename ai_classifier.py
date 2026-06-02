@@ -39,7 +39,7 @@ def get_valid_categories():
 
 AI_DISABLED = False
 
-def classify_video_with_ai(title: str, channel: str, description: str = "", vid: str = None) -> str:
+def classify_video_with_ai(title: str, channel: str, description: str = "", vid: str = None, user_id: str = None) -> str:
     global AI_DISABLED
     if AI_DISABLED:
         return None
@@ -192,7 +192,8 @@ Return a JSON object in this format:
                 # Write to ai_classifications.json
                 if vid:
                     try:
-                        class_path = os.path.join(os.path.dirname(__file__), "ai_classifications.json")
+                        filename = f"ai_classifications_{user_id}.json" if user_id else "ai_classifications.json"
+                        class_path = os.path.join(os.path.dirname(__file__), filename)
                         history = []
                         if os.path.exists(class_path):
                             with open(class_path, "r", encoding="utf-8") as f:
