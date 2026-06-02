@@ -2482,8 +2482,9 @@ def get_rollback(action_id: str):
         return HTMLResponse(content=f"<h1>Error running rollback: {e}</h1>", status_code=500)
 
 @app.get("/api/ai-classifications")
-def get_ai_classifications():
-    class_path = os.path.join(os.path.dirname(__file__), "ai_classifications.json")
+def get_ai_classifications(user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    class_path = get_user_file_path("ai_classifications.json", user)
     classifications = []
     if os.path.exists(class_path):
         try:
@@ -2493,7 +2494,7 @@ def get_ai_classifications():
             raise HTTPException(status_code=500, detail=f"Error reading classifications: {e}")
             
     # Resolve current playlist for each classification item
-    report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+    report_path = get_user_file_path("playlists_report.json", user)
     vid_to_playlist = {}
     if os.path.exists(report_path):
         try:
@@ -2514,8 +2515,9 @@ def get_ai_classifications():
     return classifications
 
 @app.post("/api/ai-classifications/delete")
-def api_ai_classifications_delete(req: BatchAIDeleteRequest):
-    class_path = os.path.join(os.path.dirname(__file__), "ai_classifications.json")
+def api_ai_classifications_delete(req: BatchAIDeleteRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    class_path = get_user_file_path("ai_classifications.json", user)
     if not os.path.exists(class_path):
         raise HTTPException(status_code=404, detail="Classifications log not found")
         
@@ -2528,7 +2530,7 @@ def api_ai_classifications_delete(req: BatchAIDeleteRequest):
             raise HTTPException(status_code=404, detail="No matching classifications found")
             
         # Resolve current playlist for each target
-        report_path = os.path.join(os.path.dirname(__file__), "playlists_report.json")
+        report_path = get_user_file_path("playlists_report.json", user)
         vid_to_playlist = {}
         if os.path.exists(report_path):
             try:
@@ -2556,7 +2558,7 @@ def api_ai_classifications_delete(req: BatchAIDeleteRequest):
             success, msg = task_manager.run_function(
                 f"Multi-Source Delete ({len(delete_items)} items)",
                 execute_multi_source_delete_background,
-                (delete_items,)
+                (delete_items, user_id)
             )
             if not success:
                 raise HTTPException(status_code=400, detail=msg)
@@ -2570,8 +2572,9 @@ def api_ai_classifications_delete(req: BatchAIDeleteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/ai-classifications/action")
-def api_ai_classification_action(req: AIClassificationActionRequest):
-    class_path = os.path.join(os.path.dirname(__file__), "ai_classifications.json")
+def api_ai_classification_action(req: AIClassificationActionRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    class_path = get_user_file_path("ai_classifications.json", user)
     if not os.path.exists(class_path):
         raise HTTPException(status_code=404, detail="AI Classifications log not found")
         
@@ -2605,16 +2608,20 @@ def api_ai_classification_action(req: AIClassificationActionRequest):
         channel_name = target.get("channel")
         target_category = target.get("category")
         if channel_name and target_category:
-            from apply_maintenance import learn_channel_rule
-            learn_channel_rule(channel_name, target_category)
+            if is_oauth_configured():
+                db_helper.save_user_rule(user_id, channel_name, target_category)
+            else:
+                from apply_maintenance import learn_channel_rule
+                learn_channel_rule(channel_name, target_category)
                         
         return {"success": True, "message": f"Successfully {req.action}d classification and pinned channel rule"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/ai-classifications/batch-action")
-def api_batch_ai_classification_action(req: BatchAIClassificationRequest):
-    class_path = os.path.join(os.path.dirname(__file__), "ai_classifications.json")
+def api_batch_ai_classification_action(req: BatchAIClassificationRequest, user=Depends(get_current_user)):
+    user_id = user.get("user_id") if "user_id" in user else user.get("id")
+    class_path = get_user_file_path("ai_classifications.json", user)
     if not os.path.exists(class_path):
         raise HTTPException(status_code=404, detail="AI Classifications log not found")
         
@@ -2656,9 +2663,13 @@ def api_batch_ai_classification_action(req: BatchAIClassificationRequest):
             
         # Bulk learn/update channel rules
         if new_channel_rules:
-            from apply_maintenance import learn_channel_rule
-            for channel, category in new_channel_rules:
-                learn_channel_rule(channel, category)
+            if is_oauth_configured():
+                for channel, category in new_channel_rules:
+                    db_helper.save_user_rule(user_id, channel, category)
+            else:
+                from apply_maintenance import learn_channel_rule
+                for channel, category in new_channel_rules:
+                    learn_channel_rule(channel, category)
                         
         return {"success": True, "message": f"Successfully processed {success_count} classifications."}
     except Exception as e:
