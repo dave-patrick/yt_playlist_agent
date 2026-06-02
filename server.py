@@ -2197,7 +2197,7 @@ def get_screenshot(name: str):
     raise HTTPException(status_code=404, detail="Screenshot not found")
 
 @app.get("/api/settings")
-def get_settings():
+def api_get_settings():
     settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
     if os.path.exists(settings_path):
         try:
