@@ -25,7 +25,7 @@ def parse_rules():
             print(f"Warning: Could not load user rules from DB: {e}")
     else:
         try:
-            with open("youtube_category_channel_map.txt", "r", encoding="utf-8") as f:
+            with open("yt_category_channel_map.txt", "r", encoding="utf-8") as f:
                 for line in f:
                     if ":" in line:
                         parts = line.strip().split(":")
@@ -35,7 +35,7 @@ def parse_rules():
             print(f"Warning: Could not read channel map: {e}")
             
     try:
-        rules_path = os.path.join(os.path.dirname(__file__), "youtube_rules.promptinclude.md")
+        rules_path = os.path.join(os.path.dirname(__file__), "yt_rules.promptinclude.md")
         if os.path.exists(rules_path):
             with open(rules_path, "r", encoding="utf-8") as f:
                 for line in f:

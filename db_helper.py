@@ -180,7 +180,7 @@ def import_default_rules_if_empty(user_id):
     cursor.execute("SELECT COUNT(*) as cnt FROM user_rules WHERE user_id = ?", (user_id,))
     count = cursor.fetchone()["cnt"]
     if count == 0:
-        map_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
+        map_path = os.path.join(os.path.dirname(__file__), "yt_category_channel_map.txt")
         if os.path.exists(map_path):
             try:
                 rules = []

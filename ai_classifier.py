@@ -6,7 +6,7 @@ from datetime import datetime
 
 def get_valid_categories():
     categories = []
-    rules_path = os.path.join(os.path.dirname(__file__), "youtube_rules.promptinclude.md")
+    rules_path = os.path.join(os.path.dirname(__file__), "yt_rules.promptinclude.md")
     if not os.path.exists(rules_path):
         return categories
         
@@ -71,7 +71,7 @@ def classify_video_with_ai(title: str, channel: str, description: str = "", vid:
     # 3. Read rules details for prompt guidance
     rules_text = ""
     try:
-        rules_path = os.path.join(os.path.dirname(__file__), "youtube_rules.promptinclude.md")
+        rules_path = os.path.join(os.path.dirname(__file__), "yt_rules.promptinclude.md")
         if os.path.exists(rules_path):
             with open(rules_path, "r", encoding="utf-8") as rf:
                 rules_text = rf.read()
@@ -80,7 +80,7 @@ def classify_video_with_ai(title: str, channel: str, description: str = "", vid:
 
     # 4. Build prompt
     categories_str = ", ".join([f"'{c}'" for c in categories])
-    prompt = f"""You are an intelligent assistant classifying YouTube videos into a user's existing playlists.
+    prompt = f"""You are an intelligent assistant classifying YT videos into a user's existing playlists.
 
 Here are the specific rules and category descriptions defined by the user:
 {rules_text}

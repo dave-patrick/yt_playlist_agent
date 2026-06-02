@@ -17,7 +17,7 @@ import db_helper
 import scheduler
 from core import add_video_to_playlist, remove_video_from_playlist, list_videos_in_playlist, move_video, get_browser
 
-app = FastAPI(title="YouTube Playlist Agent API")
+app = FastAPI(title="YT Playlist Manager API")
 
 # Settings loader helper
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "settings.json")

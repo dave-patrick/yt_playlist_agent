@@ -4,7 +4,7 @@ import re
 import typer
 from core import add_video_to_playlist, remove_video_from_playlist, create_playlist, list_videos_in_playlist, get_all_playlists, move_video
 
-app = typer.Typer(help="YouTube Playlist Agent CLI")
+app = typer.Typer(help="YT Playlist Agent CLI")
 
 @app.command()
 def add(url: str, playlist: str):
@@ -153,7 +153,7 @@ def scan():
 def parse_rules():
     channel_map = {}
     try:
-        with open("youtube_category_channel_map.txt", "r", encoding="utf-8") as f:
+        with open("yt_category_channel_map.txt", "r", encoding="utf-8") as f:
             for line in f:
                 if ":" in line:
                     parts = line.strip().split(":")
@@ -164,7 +164,7 @@ def parse_rules():
         
     category_to_id = {}
     try:
-        with open("youtube_rules.promptinclude.md", "r", encoding="utf-8") as f:
+        with open("yt_rules.promptinclude.md", "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip().startswith("|") and "`PL" in line:
                     parts = [p.strip() for p in line.split("|")]

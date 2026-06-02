@@ -70,7 +70,7 @@ def send_discord_history_report(applied_actions):
             })
             
         payload = {
-            "content": f"🔔 **YouTube Playlist Agent Maintenance Report**\nSuccessfully applied {len(applied_actions)} sorting actions.",
+            "content": f"🔔 **YT Playlist Agent Maintenance Report**\nSuccessfully applied {len(applied_actions)} sorting actions.",
             "embeds": embeds
         }
         
@@ -100,7 +100,7 @@ def is_in_window():
 def learn_channel_rule(channel, category):
     if not channel or not category:
         return
-    chan_path = os.path.join(os.path.dirname(__file__), "youtube_category_channel_map.txt")
+    chan_path = os.path.join(os.path.dirname(__file__), "yt_category_channel_map.txt")
     try:
         lines = []
         if os.path.exists(chan_path):

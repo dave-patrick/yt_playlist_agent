@@ -1,5 +1,5 @@
 import json
-with open('youtube_category_channel_map.txt', 'r', encoding='utf-8') as f:
+with open('yt_category_channel_map.txt', 'r', encoding='utf-8') as f:
     channel_map = {}
     for line in f:
         if ':' in line:
