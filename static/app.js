@@ -208,6 +208,34 @@ async function fetchLogs() {
     }
 }
 
+function copyLogs() {
+    const logsText = document.getElementById('console-logs').textContent;
+    navigator.clipboard.writeText(logsText)
+        .then(() => {
+            addConsoleLog("[Client] Logs copied to clipboard.");
+        })
+        .catch(err => {
+            console.error("Failed to copy logs: ", err);
+            alert("Failed to copy logs to clipboard.");
+        });
+}
+
+function downloadLogs() {
+    const logsText = document.getElementById('console-logs').textContent;
+    const blob = new Blob([logsText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    link.href = url;
+    link.download = `youtube_playlist_agent_logs_${timestamp}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    addConsoleLog("[Client] Logs downloaded successfully.");
+}
+
 function clearLogs() {
     fetch('/api/logs/clear', { method: 'POST' })
         .then(() => {

@@ -330,7 +330,20 @@
                 <span style="font-weight: 600; display: flex; align-items: center; gap: 6px;">
                     <span class="status-dot active"></span> Live Agent Output Terminal
                 </span>
-                <button onclick="clearLogs()" style="background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.8rem;">Clear</button>
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <button onclick="copyLogs()" style="background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-secondary)'">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        Copy
+                    </button>
+                    <button onclick="downloadLogs()" style="background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--primary)'" onmouseout="this.style.color='var(--text-secondary)'">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                        Download
+                    </button>
+                    <button onclick="clearLogs()" style="background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 4px; transition: color 0.2s;" onmouseover="this.style.color='var(--danger)'" onmouseout="this.style.color='var(--text-secondary)'">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                        Clear
+                    </button>
+                </div>
             </div>
             <div class="console-body" id="console-logs">Waiting for task output...</div>
         </div>
