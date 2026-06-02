@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms of Service - YT Playlist Agent</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: rgb(20, 20, 28) !important;
+            background-image: radial-gradient(circle at top, #1e1e38 0%, #0c0c14 100%) !important;
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1rem;
+        }
+        .terms-card {
+            max-width: 800px;
+            width: 100%;
+            padding: 3rem;
+            border-radius: 20px;
+            margin: auto;
+        }
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        h2 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-top: 2rem;
+            margin-bottom: 0.75rem;
+            color: #a5b4fc;
+        }
+        p, li {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 1rem;
+        }
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+            margin-bottom: 2rem;
+            transition: color 0.2s;
+        }
+        .back-link:hover {
+            color: #60a5fa;
+        }
+        hr {
+            border: 0;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
+            margin: 2rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="terms-card glass">
+        <a href="/" class="back-link">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+            Back to Dashboard
+        </a>
+        <h1>Terms of Service</h1>
+        <p>Last updated: June 2, 2026</p>
+        
+        <hr>
+
+        <h2>1. Agreement to Terms</h2>
+        <p>By installing, hosting, or using the <strong>YT Playlist Agent</strong> ("the App"), you agree to be bound by these Terms of Service. If you do not agree to these terms, do not install or use the App.</p>
+
+        <h2>2. Use License & Self-Hosting</h2>
+        <p>The App is provided as an open-source, self-hosted utility. You are permitted to run your own private instance of the App on your own server or cloud hardware. This instance must be used solely for personal, non-commercial purposes to organize your own YouTube playlists.</p>
+
+        <h2>3. Google & YouTube API Integration</h2>
+        <p>The App interfaces with the YouTube Data API v3. By connecting your Google Account, you agree to comply with the <a href="https://www.youtube.com/t/terms" target="_blank" style="color: var(--primary);">YouTube Terms of Service</a> and the <a href="https://policies.google.com/privacy" target="_blank" style="color: var(--primary);">Google Privacy Policy</a>.</p>
+
+        <h2>4. User Responsibilities</h2>
+        <p>As the administrator and owner of your self-hosted instance, you are entirely responsible for:</p>
+        <ul>
+            <li>Maintaining the security of your server and OAuth credentials (Client ID and Client Secret).</li>
+            <li>Avoiding any abuse of the YouTube API (e.g. attempting to exceed default API quotas or spamming requests).</li>
+            <li>Ensuring that your usage does not violate any local laws or regulations.</li>
+        </ul>
+
+        <h2>5. Disclaimer of Warranties</h2>
+        <p>The App is provided "as is" without warranties of any kind, either express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, or non-infringement. We do not guarantee that the App will meet your requirements or that its operation will be error-free.</p>
+
+        <h2>6. Limitation of Liability</h2>
+        <p>In no event shall the developers or contributors of the App be liable for any damages (including, without limitation, damages for loss of data, playlist modifications, or service interruptions) arising out of the use or inability to use the App.</p>
+
+        <h2>7. Changes to Terms</h2>
+        <p>We reserve the right to modify these terms at any time. Any changes will be updated directly on the self-hosted Terms of Service file.</p>
+    </div>
+</body>
+</html>
