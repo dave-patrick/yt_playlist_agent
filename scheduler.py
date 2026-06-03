@@ -49,37 +49,93 @@ def run_pipeline_sequence():
         print(f"[Scheduler Pipeline] {msg}")
 
     try:
-        log_message("Starting scheduled pipeline: scan -> auto_sort -> generate_maintenance -> apply_maintenance")
-        
-        # 1. Scan
-        log_message("Step 1/4: Scanning playlists...")
-        proc = subprocess.run([sys.executable, "cli.py", "scan"], capture_output=True, text=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(proc.stdout)
-            f.write(proc.stderr)
+        # Check if OAuth is configured
+        settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+        is_oauth = False
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+                if settings.get("google_client_id") and settings.get("google_client_secret"):
+                    is_oauth = True
+            except:
+                pass
+
+        if is_oauth:
+            log_message("OAuth configured. Running API-based multi-user scheduled pipeline...")
+            import db_helper
+            import yt_api
+            import server
             
-        # 2. Auto Sort
-        log_message("Step 2/4: Auto-sorting Watch Later...")
-        proc = subprocess.run([sys.executable, "cli.py", "auto-sort"], capture_output=True, text=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(proc.stdout)
-            f.write(proc.stderr)
+            # Fetch all users
+            conn = db_helper.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, email FROM users")
+            users = [dict(row) for row in cursor.fetchall()]
+            conn.close()
             
-        # 3. Generate Maintenance
-        log_message("Step 3/4: Generating maintenance plan...")
-        proc = subprocess.run([sys.executable, "generate_maintenance.py"], capture_output=True, text=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(proc.stdout)
-            f.write(proc.stderr)
+            for user in users:
+                user_id = user["id"]
+                email = user["email"]
+                log_message(f"Running pipeline sequence for user {user_id} ({email})...")
+                
+                # 1. API Scan
+                log_message(f"Step 1/4: Scanning playlists via API for user {user_id}...")
+                try:
+                    yt_api.run_api_scan_and_save(user_id)
+                except Exception as scan_err:
+                    log_message(f"API Scan failed for user {user_id}: {scan_err}")
+                
+                # 2. Skip Auto Sort (Handled by MISPLACED generation in maintenance)
+                log_message(f"Step 2/4: Skipping browser auto-sort (handled by maintenance generation)...")
+                
+                # 3. Generate Maintenance
+                log_message(f"Step 3/4: Generating maintenance plan for user {user_id}...")
+                proc = subprocess.run([sys.executable, "generate_maintenance.py", "--user-id", str(user_id)], capture_output=True, text=True)
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(proc.stdout)
+                    f.write(proc.stderr)
+                    
+                # 4. Apply Maintenance via API
+                log_message(f"Step 4/4: Applying maintenance actions via API for user {user_id}...")
+                try:
+                    server.execute_apply_maintenance_background(user_id, force=True)
+                except Exception as apply_err:
+                    log_message(f"API Maintenance Apply failed for user {user_id}: {apply_err}")
             
-        # 4. Apply Maintenance
-        log_message("Step 4/4: Applying maintenance actions...")
-        proc = subprocess.run([sys.executable, "apply_maintenance.py", "--force"], capture_output=True, text=True)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(proc.stdout)
-            f.write(proc.stderr)
+            log_message("Scheduled pipeline for all users completed successfully!")
+        else:
+            log_message("Starting scheduled pipeline: scan -> auto_sort -> generate_maintenance -> apply_maintenance")
             
-        log_message("Scheduled pipeline completed successfully!")
+            # 1. Scan
+            log_message("Step 1/4: Scanning playlists...")
+            proc = subprocess.run([sys.executable, "cli.py", "scan"], capture_output=True, text=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(proc.stdout)
+                f.write(proc.stderr)
+                
+            # 2. Auto Sort
+            log_message("Step 2/4: Auto-sorting Watch Later...")
+            proc = subprocess.run([sys.executable, "cli.py", "auto-sort"], capture_output=True, text=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(proc.stdout)
+                f.write(proc.stderr)
+                
+            # 3. Generate Maintenance
+            log_message("Step 3/4: Generating maintenance plan...")
+            proc = subprocess.run([sys.executable, "generate_maintenance.py"], capture_output=True, text=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(proc.stdout)
+                f.write(proc.stderr)
+                
+            # 4. Apply Maintenance
+            log_message("Step 4/4: Applying maintenance actions...")
+            proc = subprocess.run([sys.executable, "apply_maintenance.py", "--force"], capture_output=True, text=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(proc.stdout)
+                f.write(proc.stderr)
+                
+            log_message("Scheduled pipeline completed successfully!")
         
         # Save last run timestamp
         try:
