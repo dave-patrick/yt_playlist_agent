@@ -218,13 +218,43 @@ def generate_maintenance():
         channel = v['channel']
         
         # Only query AI if the video resides in a general/sorting inbox playlist (Learning, Music, Uncategorized)
+        # or if it is in a specific playlist like "Arizona" or "Star Wars" but has no keywords matching that playlist
         is_in_inbox = any(p in ["Learning", "Music", "Uncategorized"] for p in p_list)
+        
         target_cat, is_ai = get_target_cat(
             title, channel, channel_map, 
             vid=vid, 
             ai_classifications=ai_classifications, 
-            allow_ai=is_in_inbox
+            allow_ai=False
         )
+        
+        if not target_cat and not is_in_inbox:
+            current_p = p_list[0]
+            if current_p == "Arizona":
+                has_kw = any(k in title.lower() for k in ["arizona", "phoenix", " az", ", az"])
+                if not has_kw:
+                    target_cat, is_ai = get_target_cat(
+                        title, channel, channel_map,
+                        vid=vid,
+                        ai_classifications=ai_classifications,
+                        allow_ai=True
+                    )
+            elif current_p == "Star Wars":
+                has_kw = any(k in title.lower() for k in ["star wars", "jedi", "sith", "vader", "lightsaber", "galaxy's edge", "galaxy’s edge", "skeleton crew", "yoda", "grogu"])
+                if not has_kw:
+                    target_cat, is_ai = get_target_cat(
+                        title, channel, channel_map,
+                        vid=vid,
+                        ai_classifications=ai_classifications,
+                        allow_ai=True
+                    )
+        elif is_in_inbox and not target_cat:
+            target_cat, is_ai = get_target_cat(
+                title, channel, channel_map, 
+                vid=vid, 
+                ai_classifications=ai_classifications, 
+                allow_ai=True
+            )
         
         # 1. Handle Duplicates
         if len(p_list) > 1:

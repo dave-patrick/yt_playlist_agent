@@ -462,7 +462,7 @@ function renderMaintenanceQueue(actions) {
         item.className = 'action-item';
         item.id = `maint-item-${a.vid}`;
         
-        const isDup = a.type.startsWith('DUPLICATE');
+        const isDup = a.type && a.type.startsWith('DUPLICATE');
         const badgeClass = isDup ? 'badge-duplicate' : 'badge-misplaced';
         const badgeText = isDup ? 'Duplicate' : 'Misplaced';
         
@@ -471,11 +471,12 @@ function renderMaintenanceQueue(actions) {
             desc = `Keep in <strong>${a.keep}</strong>, remove duplicate from <strong>${a.remove.join(', ')}</strong>`;
         } else {
             let categoryOptions = '';
+            const targetTo = a.to || '';
             allPlaylists.forEach(p => {
-                const selected = p.name.toLowerCase() === a.to.toLowerCase() ? 'selected' : '';
+                const selected = p.name.toLowerCase() === targetTo.toLowerCase() ? 'selected' : '';
                 categoryOptions += `<option value="${escapeHtml(p.name)}" ${selected}>${escapeHtml(p.name)}</option>`;
             });
-            desc = `Move from <strong>${a.from.join(', ')}</strong> to 
+            desc = `Move from <strong>${a.from ? a.from.join(', ') : ''}</strong> to 
                 <select class="form-input inline-move-select" style="padding: 2px 6px; font-size: 0.85rem; width: 150px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); display: inline-block; margin-left: 4px;" onchange="updateMaintTarget('${a.vid}', this.value)">
                     ${categoryOptions}
                 </select>`;
