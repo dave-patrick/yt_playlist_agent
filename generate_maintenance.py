@@ -128,7 +128,7 @@ def get_target_cat(title, channel, channel_map, vid=None, ai_classifications=Non
     # Smart Home
     if matches(["smart home", "home assistant", "zigbee", "z-wave", "matter"]): return "Smart Home Stuff", False
     # Aviation
-    if matches(["dogfight", "airplane", " jet ", "f-22", "f-35", "f-16", "aviation", "aircraft"]): return "Aviation", False
+    if matches(["dogfight", "airplane", "airplanes", "plane", "planes", "jet", "jets", "f-22", "f-35", "f-16", "f-15", "f-18", "a-10", "sr-71", "aviation", "aircraft", "cockpit"]): return "Aviation", False
     # Blackstone
     if matches(["blackstone", "griddle", "tortellini"]): return "Blackstone", False
     # Food
