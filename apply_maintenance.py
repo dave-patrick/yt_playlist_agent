@@ -109,11 +109,18 @@ def learn_channel_rule(channel, category, is_auto_learned=True):
             "mohawk designs off-road", "nerdist", "postmodernjunkebox", "postmodern jukebox", "rob landes", "rocketjump",
             "rotten tomatoes tv", "rotten tomatoes trailers", "saturday night live", "screen junkies",
             "spencley design co.", "syd wilder", "taylor davis", "devinsupertramp", "exquisite gaming",
-            "fxguide", "mouseinfo", "kuma films", "magicofrahat"
+            "fxguide", "mouseinfo", "kuma films", "magicofrahat",
+            "mr sunday movies", "swerok+", "the vintage fame", "kristin's friends cooking", "ai golden age studios", "michael sasser"
         }
         if channel.strip().lower() in blacklist:
             print(f"Skipping auto-learned rule for blacklisted multi-topic channel: {channel}")
             return
+            
+        generic_categories = {"entertainment", "learning", "uncategorized", "music"}
+        if category.strip().lower() in generic_categories:
+            print(f"Skipping auto-learned rule for generic/inbox category: {category}")
+            return
+
             
     chan_path = os.path.join(os.path.dirname(__file__), "yt_category_channel_map.txt")
 

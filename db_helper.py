@@ -174,11 +174,18 @@ def save_user_rule(user_id, channel_name, target_category, is_auto_learned=False
             "mohawk designs off-road", "nerdist", "postmodernjunkebox", "postmodern jukebox", "rob landes", "rocketjump",
             "rotten tomatoes tv", "rotten tomatoes trailers", "saturday night live", "screen junkies",
             "spencley design co.", "syd wilder", "taylor davis", "devinsupertramp", "exquisite gaming",
-            "fxguide", "mouseinfo", "kuma films", "magicofrahat"
+            "fxguide", "mouseinfo", "kuma films", "magicofrahat",
+            "mr sunday movies", "swerok+", "the vintage fame", "kristin's friends cooking", "ai golden age studios", "michael sasser"
         }
         if channel_name.strip().lower() in blacklist:
             print(f"Skipping auto-learned rule for blacklisted multi-topic channel: {channel_name}")
             return
+            
+        generic_categories = {"entertainment", "learning", "uncategorized", "music"}
+        if target_category.strip().lower() in generic_categories:
+            print(f"Skipping auto-learned rule for generic/inbox category: {target_category}")
+            return
+
             
     conn = get_db_connection()
     cursor = conn.cursor()
