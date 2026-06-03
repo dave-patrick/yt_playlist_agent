@@ -76,7 +76,14 @@ function getJobSeconds(jobName, pendingActions) {
     }
     
     if (nameLower.includes('scan')) {
-        return isApiMode ? 8 : 90; // API scan takes ~8s, Browser scan takes ~90s
+        const statVideosEl = document.getElementById('stat-videos');
+        if (statVideosEl && isApiMode) {
+            const count = parseInt(statVideosEl.textContent.replace(/,/g, '')) || 0;
+            if (count > 0) {
+                return Math.ceil(count / 150) + 10;
+            }
+        }
+        return isApiMode ? 45 : 90; // Default fallback to 45s for API mode if no cached value
     }
     if (nameLower.includes('sort')) {
         return isApiMode ? 15 : 45; // API sort takes ~15s, Browser sort takes ~45s
