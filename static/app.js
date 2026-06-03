@@ -1367,6 +1367,66 @@ async function refreshPlaylistVideosLive() {
     }
 }
 
+async function scanAndGenerateQueueForPlaylist() {
+    if (!currentPlaylist) return;
+    
+    const tbody = document.getElementById('video-table-body');
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 3rem; color: var(--text-secondary);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle;"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg>Scanning playlist and refreshing live from YouTube...</td></tr>';
+    
+    const scanBtn = document.getElementById('btn-scan-generate');
+    if (scanBtn) {
+        scanBtn.disabled = true;
+        scanBtn.textContent = 'Scanning...';
+    }
+    
+    try {
+        // Step 1: Refresh playlist videos live
+        const url = `/api/playlists/videos?playlist_url=${encodeURIComponent(currentPlaylist.url)}&refresh=true`;
+        addConsoleLog(`[Client] Scanning playlist '${currentPlaylist.name}' live...`);
+        const response = await fetch(url);
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || "Failed to fetch live videos");
+        }
+        const data = await response.json();
+        currentVideos = data.videos || [];
+        selectedVideoUrls.clear();
+        updateSelectedCount();
+        renderVideoTable(currentVideos);
+        document.getElementById('current-playlist-meta').textContent = `${currentVideos.length} videos scanned live`;
+        addConsoleLog(`[Client] Scan completed. Found ${currentVideos.length} videos. Now regenerating maintenance queue...`);
+        
+        // Step 2: Generate maintenance queue actions
+        const genResponse = await fetch('/api/maintenance/generate', { method: 'POST' });
+        const genData = await genResponse.json();
+        if (genData.success) {
+            addConsoleLog(`[Client] Maintenance queue regeneration successfully started in the background.`);
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 3rem; color: var(--success);">Scan complete! Regenerating maintenance queue in the background. Check progress on the Dashboard.</td></tr>';
+            // Reload the table with videos after a brief delay
+            setTimeout(() => {
+                renderVideoTable(currentVideos);
+            }, 3000);
+        } else {
+            throw new Error(genData.detail || "Failed to start queue generation");
+        }
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 3rem; color: var(--danger);">Failed to scan & generate: ${err.message}</td></tr>`;
+        addConsoleLog(`[Error] Scan & Generate fail: ${err.message}`);
+        // Restore table on fail after delay
+        setTimeout(() => {
+            renderVideoTable(currentVideos);
+        }, 5000);
+    } finally {
+        if (scanBtn) {
+            scanBtn.disabled = false;
+            scanBtn.innerHTML = `
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+                Scan & Generate Queue
+            `;
+        }
+    }
+}
+
 async function removePlaylistDuplicates() {
     if (!currentPlaylist) return;
     
