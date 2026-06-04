@@ -539,7 +539,12 @@ def startup_event():
 # Serve SPA
 @app.get("/")
 def read_root():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"), headers=headers)
 
 @app.get("/api/status")
 def get_status(user=Depends(get_current_user)):
