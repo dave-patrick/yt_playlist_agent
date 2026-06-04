@@ -65,7 +65,7 @@ def run_pipeline_sequence():
             log_message("OAuth configured. Running API-based multi-user scheduled pipeline...")
             import db_helper
             import yt_api
-            import server
+            from core.task_manager import execute_apply_maintenance_background
             
             # Fetch all users
             conn = db_helper.get_db_connection()
@@ -99,7 +99,7 @@ def run_pipeline_sequence():
                 # 4. Apply Maintenance via API
                 log_message(f"Step 4/4: Applying maintenance actions via API for user {user_id}...")
                 try:
-                    server.execute_apply_maintenance_background(user_id, force=True)
+                    execute_apply_maintenance_background(user_id, force=True)
                 except Exception as apply_err:
                     log_message(f"API Maintenance Apply failed for user {user_id}: {apply_err}")
             
