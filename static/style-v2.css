@@ -1,7 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-    --bg-color: rgb(84, 82, 82);
+    --bg-color: #0c0c14;
     --card-bg: rgba(30, 30, 30, 0.65);
     --card-border: rgba(255, 255, 255, 0.1);
     --text-primary: #f3f4f6;
@@ -185,7 +185,7 @@ header {
 }
 
 .stat-card {
-    padding: 1.2rem;
+    padding: 0.5rem 0.85rem;
     position: relative;
     overflow: hidden;
 }
@@ -210,11 +210,11 @@ header {
     align-items: center;
     color: var(--text-secondary);
     font-size: 0.85rem;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.15rem;
 }
 
 .stat-value {
-    font-size: 2rem;
+    font-size: 1.5rem;
     font-weight: 700;
     letter-spacing: -1px;
 }
@@ -230,14 +230,14 @@ header {
 .control-panel {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    padding: 1.5rem;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
 }
 
 .panel-title {
     font-size: 1.2rem;
     font-weight: 600;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.25rem;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -253,11 +253,11 @@ header {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--text-primary);
-    padding: 12px 20px;
+    padding: 8px 16px;
     font-family: inherit;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     font-weight: 600;
-    border-radius: 10px;
+    border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s ease;
     display: flex;
@@ -762,6 +762,107 @@ header {
     color: var(--primary) !important;
 }
 
+/* --- SUBSCRIPTIONS CONTAINER & SIDEBAR Layout --- */
+.subscriptions-container {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 1.5rem;
+    align-items: start;
+}
+
+.sub-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.25rem;
+    height: calc(100vh - 280px);
+    min-height: 500px;
+    max-height: 800px;
+}
+
+.sub-channel-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    flex-grow: 1;
+    padding-right: 4px;
+}
+
+.sub-channel-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.sub-channel-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.sub-channel-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.sub-channel-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.sub-channel-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: left;
+    color: var(--text-primary);
+    font-weight: 500;
+    width: 100%;
+}
+
+.sub-channel-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.sub-channel-item.active {
+    background: var(--primary-glow);
+    border-color: rgba(59, 130, 246, 0.35);
+    color: #60a5fa;
+}
+
+.sub-channel-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.9rem;
+    padding-right: 8px;
+}
+
+.sub-channel-badge {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.sub-channel-item.active .sub-channel-badge {
+    background: var(--primary);
+    color: white;
+}
+
+.sub-main-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    min-width: 0;
+}
+
 /* --- MOBILE RESPONSIVENESS AND LAYOUT FIXES --- */
 
 html {
@@ -826,20 +927,30 @@ html {
         gap: 1rem;
     }
     .stat-card {
-        padding: 0.8rem 1rem;
+        padding: 0.5rem 0.85rem;
     }
     .stat-header {
-        margin-bottom: 0.3rem;
+        margin-bottom: 0.15rem;
         font-size: 0.8rem;
     }
     .stat-value {
-        font-size: 1.6rem;
+        font-size: 1.4rem;
     }
     
     /* Controls Stack */
     .btn-group {
         grid-template-columns: 1fr;
         gap: 10px;
+    }
+    
+    /* Subscriptions Responsiveness */
+    .subscriptions-container {
+        grid-template-columns: 1fr;
+    }
+    
+    .sub-sidebar {
+        height: 300px;
+        min-height: auto;
     }
 }
 
