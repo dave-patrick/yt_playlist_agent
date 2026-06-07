@@ -67,6 +67,17 @@ def init_db():
     )
     """)
     
+    # 5. Manual Moves Table (Tracks user manually moved videos to prevent auto-restoring)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS manual_moves (
+        user_id INTEGER,
+        video_id TEXT NOT NULL,
+        target_playlist TEXT NOT NULL,
+        moved_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, video_id)
+    )
+    """)
+    
     conn.commit()
     conn.close()
 
@@ -203,8 +214,26 @@ def import_default_rules_if_empty(user_id):
                     """, rules)
             except Exception as e:
                 print(f"Error importing default rules: {e}")
+
+def save_manual_move(user_id, video_id, target_playlist):
+    user_id = user_id or 1
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    moved_at = datetime.now().isoformat()
+    cursor.execute("""
+    INSERT OR REPLACE INTO manual_moves (user_id, video_id, target_playlist, moved_at) VALUES (?, ?, ?, ?)
+    """, (user_id, video_id, target_playlist, moved_at))
     conn.commit()
     conn.close()
+
+def get_manual_moves(user_id):
+    user_id = user_id or 1
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT video_id, target_playlist FROM manual_moves WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return {row["video_id"]: row["target_playlist"] for row in rows}
 
 # Initialize DB on load
 init_db()

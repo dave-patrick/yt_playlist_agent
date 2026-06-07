@@ -480,6 +480,7 @@ def api_ai_classifications_delete(req: BatchAIDeleteRequest, user=Depends(get_cu
         raise HTTPException(status_code=404, detail="Classifications log not found")
         
     try:
+        delete_items = []
         with cache_lock:
             with open(class_path, "r", encoding="utf-8") as f:
                 classifications = json.load(f)
@@ -503,7 +504,6 @@ def api_ai_classifications_delete(req: BatchAIDeleteRequest, user=Depends(get_cu
                 except:
                     pass
                     
-            delete_items = []
             for c in targets:
                 current_p = vid_to_playlist.get(c.get("vid"))
                 if current_p and current_p != "Unknown":
@@ -512,18 +512,18 @@ def api_ai_classifications_delete(req: BatchAIDeleteRequest, user=Depends(get_cu
                         "source_playlist": current_p
                     })
                     
-            if delete_items:
-                success, msg = task_manager.run_function(
-                    f"Multi-Source Delete ({len(delete_items)} items)",
-                    execute_multi_source_delete_background,
-                    (delete_items, user_id)
-                )
-                if not success:
-                    raise HTTPException(status_code=400, detail=msg)
-                    
             updated_classifications = [c for c in classifications if c.get("vid") not in req.vids]
             with open(class_path, "w", encoding="utf-8") as f:
                 json.dump(updated_classifications, f, indent=2, ensure_ascii=False)
+                
+        if delete_items:
+            success, msg = task_manager.run_function(
+                f"Multi-Source Delete ({len(delete_items)} items)",
+                execute_multi_source_delete_background,
+                (delete_items, user_id)
+            )
+            if not success:
+                raise HTTPException(status_code=400, detail=msg)
                 
         return {"success": True, "message": f"Successfully queued deletion of {len(delete_items)} videos and updated classifications."}
     except HTTPException:
@@ -539,6 +539,10 @@ def api_ai_classification_action(req: AIClassificationActionRequest, user=Depend
         raise HTTPException(status_code=404, detail="AI Classifications log not found")
         
     try:
+        channel_name = None
+        target_category = None
+        action_performed = False
+        
         with cache_lock:
             with open(class_path, "r", encoding="utf-8") as f:
                 classifications = json.load(f)
@@ -565,12 +569,14 @@ def api_ai_classification_action(req: AIClassificationActionRequest, user=Depend
                 
             channel_name = target.get("channel")
             target_category = target.get("category")
-            if channel_name and target_category:
-                if is_oauth_configured():
-                    db_helper.save_user_rule(user_id, channel_name, target_category)
-                else:
-                    from apply_maintenance import learn_channel_rule
-                    learn_channel_rule(channel_name, target_category)
+            action_performed = True
+            
+        if action_performed and channel_name and target_category:
+            if is_oauth_configured():
+                db_helper.save_user_rule(user_id, channel_name, target_category)
+            else:
+                from apply_maintenance import learn_channel_rule
+                learn_channel_rule(channel_name, target_category)
                             
         return {"success": True, "message": f"Successfully {req.action}d classification and pinned channel rule"}
     except HTTPException:
@@ -586,6 +592,10 @@ def api_batch_ai_classification_action(req: BatchAIClassificationRequest, user=D
         raise HTTPException(status_code=404, detail="AI Classifications log not found")
         
     try:
+        new_channel_rules = []
+        action_performed = False
+        success_count = 0
+        
         with cache_lock:
             with open(class_path, "r", encoding="utf-8") as f:
                 classifications = json.load(f)
@@ -596,9 +606,6 @@ def api_batch_ai_classification_action(req: BatchAIClassificationRequest, user=D
                     json.dump(classifications, f, indent=2, ensure_ascii=False)
                 return {"success": True, "message": f"Successfully skipped {len(req.vids)} classifications"}
                 
-            success_count = 0
-            new_channel_rules = []
-            
             for item in classifications:
                 if item.get("vid") in req.vids:
                     if req.action == "approve":
@@ -619,14 +626,16 @@ def api_batch_ai_classification_action(req: BatchAIClassificationRequest, user=D
             with open(class_path, "w", encoding="utf-8") as f:
                 json.dump(classifications, f, indent=2, ensure_ascii=False)
                 
-            if new_channel_rules:
-                if is_oauth_configured():
-                    for channel, category in new_channel_rules:
-                        db_helper.save_user_rule(user_id, channel, category)
-                else:
-                    from apply_maintenance import learn_channel_rule
-                    for channel, category in new_channel_rules:
-                        learn_channel_rule(channel, category)
+            action_performed = True
+            
+        if action_performed and new_channel_rules:
+            if is_oauth_configured():
+                for channel, category in new_channel_rules:
+                    db_helper.save_user_rule(user_id, channel, category)
+            else:
+                from apply_maintenance import learn_channel_rule
+                for channel, category in new_channel_rules:
+                    learn_channel_rule(channel, category)
                             
         return {"success": True, "message": f"Successfully processed {success_count} classifications."}
     except HTTPException:

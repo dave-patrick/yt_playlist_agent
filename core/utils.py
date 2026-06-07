@@ -12,7 +12,7 @@ RULES_CACHE = {}
 MAINTENANCE_CACHE = {}
 
 # Locks for thread-safety
-cache_lock = threading.Lock()
+cache_lock = threading.RLock()
 
 SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "settings.json")
 

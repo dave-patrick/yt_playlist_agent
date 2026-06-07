@@ -69,7 +69,7 @@ def add_channel_rule(req: AddChannelRuleRequest, user=Depends(get_current_user))
     try:
         if not is_oauth_configured():
             from apply_maintenance import learn_channel_rule
-            learn_channel_rule(req.channel, req.category)
+            learn_channel_rule(req.channel, req.category, is_auto_learned=False)
         else:
             db_helper.save_user_rule(user_id, req.channel, req.category)
         invalidate_rules_cache(user_id)

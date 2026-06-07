@@ -184,6 +184,13 @@ def generate_maintenance():
     channel_map, valid_cats = parse_rules()
     ai_classifications = load_ai_classifications()
     
+    manual_moves = {}
+    try:
+        import db_helper
+        manual_moves = db_helper.get_manual_moves(user_id)
+    except Exception as e:
+        print(f"Warning: Could not load manual moves: {e}")
+    
     # Map video ID to list of playlists it's in
     vid_to_playlists = defaultdict(list)
     vid_to_info = {}
@@ -262,8 +269,22 @@ def generate_maintenance():
         
         # 1. Handle Duplicates
         if len(p_list) > 1:
+            # Check if manually moved target is in the current playlists
+            manually_moved_target = manual_moves.get(vid)
+            if manually_moved_target and manually_moved_target in p_list:
+                keep = manually_moved_target
+                remove = [p for p in p_list if p != keep]
+                actions.append({
+                    "type": "DUPLICATE",
+                    "title": title,
+                    "vid": vid,
+                    "keep": keep,
+                    "remove": remove,
+                    "is_ai": is_ai,
+                    "channel": channel
+                })
             # If it matches a rule, keep the target category version
-            if target_cat and target_cat in p_list:
+            elif target_cat and target_cat in p_list:
                 keep = target_cat
                 remove = [p for p in p_list if p != target_cat]
                 actions.append({
@@ -299,6 +320,11 @@ def generate_maintenance():
                 
         # 2. Handle Misplaced (only if NOT a duplicate we just handled)
         elif target_cat and target_cat not in p_list and target_cat in valid_cats:
+            # If manually moved to one of the current playlists, don't move it back
+            manually_moved_target = manual_moves.get(vid)
+            if manually_moved_target and manually_moved_target in p_list:
+                continue
+                
             # Only move if it's currently in a general playlist like "Learning" or "Music"
             # or if it's clearly misplaced (e.g. Football in Star Wars)
             current_p = p_list[0]

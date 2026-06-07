@@ -157,7 +157,7 @@ Black Angel film:Short films
 Black Timber Company:Maker Idea
 blackdragons95:Concerts
 Blackstone Griddles:Blackstone
-Blacktail Studio:Woodworking
+Blacktail Studio:Maker
 BLADE Magazine:TV
 Blake Weber:Truck
 Blazing Bane:AI
@@ -698,7 +698,7 @@ Magellan and Greyhound:Truck
 Make It Kustom:Welding
 Make It Work:Smart Home Stuff
 Make or Break Shop:Laser
-Make Something:Maker Idea
+Make Something:Maker
 Maker Table:Maker Idea
 Maker's Muse:3D Printing Software
 Makerj101:Maker Idea
@@ -1333,7 +1333,7 @@ Wes Hamstra:Maker Idea
 WeShape:Exercise
 West Texas Rambler:Truck
 whamBLAMO:Star Wars
-What Meike Makes:Woodworking
+What Meike Makes:Maker
 WhatGear:Mobile
 White Bone Knives:Knives - Howto
 WHY DINOSAURS? and 5 more:TV
@@ -1600,7 +1600,7 @@ Code Name: new2vero2:Music Videos
 Punished Props Academy:Tech
 Sam Macy Designs:Star Wars
 Kreg Tool:Woodworking
-Blacktail Studio Uncut:Woodworking
+Blacktail Studio Uncut:Maker
 Bullets & Blockbusters:Star Wars
 Short of the Week:Auto
 Small Town Monsters:Bigfoot

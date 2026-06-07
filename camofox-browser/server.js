@@ -947,7 +947,7 @@ async function launchBrowserInstance() {
     try {
       if (os.platform() === 'linux') {
         localVirtualDisplay = pluginCtx.createVirtualDisplay();
-        vdDisplay = localVirtualDisplay.get();
+        vdDisplay = await localVirtualDisplay.get();
         log('info', 'xvfb virtual display started', { display: vdDisplay, attempt });
       }
     } catch (err) {
@@ -2641,7 +2641,7 @@ app.post('/tabs', async (req, res) => {
         if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
         tabState.lastRequestedUrl = url;
         try {
-          await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'commit', timeout: 90000 }));
         } catch (navErr) {
           if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
             log('warn', 'tab create navigate failed, retrying with fresh proxy', {
@@ -2662,7 +2662,7 @@ app.post('/tabs', async (req, res) => {
             retryGroup.set(tabId, tabState);
             attachPopupHandler(retryPage, userId, resolvedSessionKey);
             refreshActiveTabsGauge();
-            await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+            await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'commit', timeout: 90000 }));
           } else {
             throw navErr;
           }
@@ -2791,7 +2791,7 @@ app.post('/tabs/:tabId/navigate', async (req, res) => {
         const navigateCurrentPage = async () => {
           tabState.lastRequestedUrl = targetUrl;
           const ac = tabState.navigateAbort = new AbortController();
-          const gotoP = withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+          const gotoP = withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'commit', timeout: 90000 }));
           try {
             await Promise.race([
               gotoP,
@@ -5335,7 +5335,7 @@ app.post('/tabs/open', async (req, res) => {
     refreshActiveTabsGauge();
     
     try {
-      await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+      await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'commit', timeout: 90000 }));
     } catch (navErr) {
       if ((isProxyError(navErr) || isTimeoutError(navErr)) && proxyPool?.canRotateSessions) {
         log('warn', 'tab open failed, retrying with fresh proxy', {
@@ -5355,7 +5355,7 @@ app.post('/tabs/open', async (req, res) => {
         group.set(tabId, tabState);
         attachPopupHandler(page, userId, listItemId);
         refreshActiveTabsGauge();
-        await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+        await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'commit', timeout: 90000 }));
       } else {
         throw navErr;
       }
@@ -5524,7 +5524,7 @@ app.post('/navigate', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     
     const result = await withTabLock(targetId, async () => {
-      await withPageLoadDuration('navigate', () => tabState.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+      await withPageLoadDuration('navigate', () => tabState.page.goto(url, { waitUntil: 'commit', timeout: 90000 }));
       tabState.visitedUrls.add(url);
       tabState.lastSnapshot = null;
       

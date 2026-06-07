@@ -187,6 +187,7 @@ fun DashboardWebView(url: String, onOpenSettings: () -> Unit) {
         AndroidView(
             factory = { context ->
                 WebView(context).apply {
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                             isLoading = true

@@ -2,7 +2,7 @@ import json
 import os
 import re
 import typer
-from core import add_video_to_playlist, remove_video_from_playlist, create_playlist, list_videos_in_playlist, get_all_playlists, move_video
+from core import add_video_to_playlist, remove_video_from_playlist, create_playlist, list_videos_in_playlist, get_all_playlists, move_video, get_browser
 
 app = typer.Typer(help="YT Playlist Agent CLI")
 
@@ -69,9 +69,10 @@ def list(name: str, json_format: bool = typer.Option(False, "--json", help="Outp
         raise typer.Exit(code=1)
 
 @app.command()
-def scan():
+def scan(force: bool = typer.Option(False, "--force", help="Force rescan of all playlists")):
     """Scan all playlists and their videos."""
     typer.echo("Fetching all playlists...")
+    driver = None
     try:
         if os.path.exists("playlists_urls.json"):
             with open("playlists_urls.json", "r", encoding="utf-8") as f:
@@ -85,11 +86,13 @@ def scan():
             with open("playlists_report.json", "r", encoding="utf-8") as f:
                 report = json.load(f)
         
-        scanned_names = {
-            p["name"] for p in report
-            if (p.get("video_count", 0) > 0 or p.get("videos"))
-            and all("published" in v for v in p.get("videos", []))
-        }
+        scanned_names = set()
+        if not force:
+            scanned_names = {
+                p["name"] for p in report
+                if (p.get("video_count", 0) > 0 or p.get("videos"))
+                and all("published" in v for v in p.get("videos", []))
+            }
         
         for p in playlists:
             if p["name"] in scanned_names:
@@ -103,7 +106,13 @@ def scan():
             existing_videos = existing_p.get("videos", []) if existing_p else []
             
             try:
-                videos = list_videos_in_playlist(p["url"])
+                if not driver:
+                    driver = get_browser()
+                videos = list_videos_in_playlist(p["url"], driver=driver)
+                
+                # Extract and populate playlist ID in report
+                if "list=" in p["url"]:
+                    p["id"] = p["url"].split("list=")[-1].split("&")[0]
                 
                 # Never overwrite real cache with mock data
                 is_mock = videos and any('mockvid' in v.get('url', '') or v.get('title', '').startswith('Mock Video') for v in videos)
@@ -149,6 +158,10 @@ def scan():
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    finally:
+        if driver:
+            try: driver.quit()
+            except: pass
 
 def parse_rules():
     channel_map = {}

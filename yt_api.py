@@ -190,6 +190,8 @@ def run_api_scan_and_save(user_id):
             })
         except Exception as e:
             print(f"Failed to scan playlist {p['name']}: {e}")
+            if "quotaExceeded" in str(e):
+                raise e
             
     report_path = os.path.join(os.path.dirname(__file__), f"playlists_report_{user_id}.json")
     with open(report_path, "w", encoding="utf-8") as f:

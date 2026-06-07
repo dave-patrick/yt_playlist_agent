@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import time
 import threading
@@ -198,132 +199,108 @@ def execute_batch_move_background(video_urls: List[str], source_playlist: str, t
     total = len(video_urls)
     append_agent_log(f"Starting batch move of {total} videos from '{source_playlist}' to '{target_playlist}' (user_id={user_id}).")
     
-    if is_oauth_configured() and user_id is not None:
-        import yt_api
-        success_count = 0
+    driver = None
+    success_count = 0
+    
+    # We want to determine if we should try API first.
+    use_api = is_oauth_configured() and user_id is not None
+    target_playlist_id = None
+    if use_api:
         try:
+            import yt_api
             target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
             if not target_playlist_id:
                 raise ValueError(f"Target playlist '{target_playlist}' not found in user cache")
-                
-            for i, url in enumerate(video_urls):
-                current_job_name = f"Batch Move ({i+1}/{total})"
-                with task_manager.lock:
-                    scheduler.active_job = current_job_name
-                    task_manager.active_job = current_job_name
-                
-                vid = extract_video_id(url)
-                append_agent_log(f"[{i+1}/{total}] Moving: {url}...")
-                
-                success = False
+        except Exception as e:
+            append_agent_log(f"Fatal error in API setup for batch move: {e}. Falling back to browser automation.")
+            use_api = False
+
+    try:
+        for i, url in enumerate(video_urls):
+            current_job_name = f"Batch Move ({i+1}/{total})"
+            with task_manager.lock:
+                scheduler.active_job = current_job_name
+                task_manager.active_job = current_job_name
+            
+            vid = extract_video_id(url)
+            append_agent_log(f"[{i+1}/{total}] Moving: {url}...")
+            
+            success = False
+            moved_via_api = False
+            
+            if use_api:
                 try:
                     source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
                     if not source_playlist_item_id:
                         raise ValueError(f"Source item ID for '{url}' not found")
                     success = yt_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+                    if success:
+                        moved_via_api = True
+                    else:
+                        append_agent_log(f"API move returned False for {url}.")
                 except Exception as e:
-                    append_agent_log(f"Error moving {url}: {e}")
-                    
-                if success:
-                    success_count += 1
-                    append_agent_log(f"Successfully moved {url}.")
-                    
-                    title = find_title_in_cache(url, source_playlist, user_id)
-                    action = {
-                        "vid": vid,
-                        "title": title,
-                        "type": "MISPLACED",
-                        "from": [source_playlist],
-                        "to": target_playlist
-                    }
-                    from apply_maintenance import record_history
-                    action_id = record_history(action, user_id)
-                    
-                    try:
-                        from apply_maintenance import send_discord_history_report
-                        send_discord_history_report([{**action, "action_id": action_id}])
-                    except: pass
-                    
-                    update_cache_for_move(url, source_playlist, target_playlist, user_id)
-                else:
-                    append_agent_log(f"Failed to move: {url}")
-                    
-            append_agent_log(f"Batch move completed. Successfully moved {success_count} of {total} videos.")
-            scheduler.send_webhook_notification(f"Batch move completed. Moved {success_count}/{total} videos from '{source_playlist}' to '{target_playlist}'.")
-        except Exception as e:
-            append_agent_log(f"Fatal error in API batch move: {e}")
-            scheduler.send_webhook_notification(f"Batch move failed: {e}", is_error=True)
-        finally:
-            with task_manager.lock:
-                task_manager.active_job = None
-                with scheduler.job_lock:
-                    scheduler.active_job = None
-    else:
-        driver = None
-        try:
-            driver = get_browser()
-            success_count = 0
+                    append_agent_log(f"API move failed for {url}: {e}")
             
-            for i, url in enumerate(video_urls):
-                current_job_name = f"Batch Move ({i+1}/{total})"
-                with task_manager.lock:
-                    scheduler.active_job = current_job_name
-                    task_manager.active_job = current_job_name
-                
-                append_agent_log(f"[{i+1}/{total}] Moving: {url}...")
-                
-                success = False
+            # If API move wasn't tried or failed, try browser fallback
+            if not success:
+                append_agent_log(f"Trying browser automation fallback for {url}...")
                 try:
+                    if driver is None:
+                        append_agent_log("Initializing browser automation fallback...")
+                        driver = get_browser()
                     success = move_video(url, source_playlist, target_playlist, driver=driver)
                 except Exception as e:
-                    append_agent_log(f"Error moving {url}: {e}")
-                
-                if success:
-                    success_count += 1
-                    append_agent_log(f"Successfully moved {url}.")
-                    
-                    vid = extract_video_id(url)
-                    title = find_title_in_cache(url, source_playlist)
-                    action = {
-                        "vid": vid,
-                        "title": title,
-                        "type": "MISPLACED",
-                        "from": [source_playlist],
-                        "to": target_playlist
-                    }
-                    from apply_maintenance import record_history
-                    action_id = record_history(action)
-                    append_agent_log(f"History recorded. Action ID: {action_id}")
-                    
-                    try:
-                        from apply_maintenance import send_discord_history_report
-                        send_discord_history_report([{**action, "action_id": action_id}])
-                    except Exception as ex:
-                        append_agent_log(f"Discord report fail: {ex}")
-                    
-                    update_cache_for_move(url, source_playlist, target_playlist)
-                else:
-                    append_agent_log(f"Failed to move: {url}")
-                    
-                time.sleep(1)
-                
-            append_agent_log(f"Batch move completed. Successfully moved {success_count} of {total} videos.")
-            scheduler.send_webhook_notification(f"Batch move completed. Moved {success_count}/{total} videos from '{source_playlist}' to '{target_playlist}'.")
+                    append_agent_log(f"Fallback browser action failed for {url}: {e}")
             
-        except Exception as e:
-            append_agent_log(f"Fatal error in batch move: {e}")
-            scheduler.send_webhook_notification(f"Batch move failed: {e}", is_error=True)
-        finally:
-            if driver:
+            if success:
+                success_count += 1
+                append_agent_log(f"Successfully moved {url}.")
+                
+                title = find_title_in_cache(url, source_playlist, user_id)
+                action = {
+                    "vid": vid,
+                    "title": title,
+                    "type": "MISPLACED",
+                    "from": [source_playlist],
+                    "to": target_playlist
+                }
+                from apply_maintenance import record_history
+                action_id = record_history(action, user_id)
+                
                 try:
-                    driver.quit()
+                    from apply_maintenance import send_discord_history_report
+                    send_discord_history_report([{**action, "action_id": action_id}])
                 except:
                     pass
-            
-            with task_manager.lock:
-                task_manager.active_job = None
-                with scheduler.job_lock:
-                    scheduler.active_job = None
+                
+                update_cache_for_move(url, source_playlist, target_playlist, user_id)
+                try:
+                    db_helper.save_manual_move(user_id, vid, target_playlist)
+                    append_agent_log(f"Recorded manual move: {vid} -> '{target_playlist}'")
+                except Exception as ex:
+                    append_agent_log(f"Failed to record manual move: {ex}")
+            else:
+                append_agent_log(f"Failed to move: {url}")
+                
+            # If we did a browser move, sleep a tiny bit to avoid spamming
+            if not moved_via_api and driver is not None:
+                time.sleep(1)
+                
+        append_agent_log(f"Batch move completed. Successfully moved {success_count} of {total} videos.")
+        scheduler.send_webhook_notification(f"Batch move completed. Moved {success_count}/{total} videos from '{source_playlist}' to '{target_playlist}'.")
+    except Exception as e:
+        append_agent_log(f"Fatal error in batch move loop: {e}")
+        scheduler.send_webhook_notification(f"Batch move failed: {e}", is_error=True)
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+        with task_manager.lock:
+            task_manager.active_job = None
+            with scheduler.job_lock:
+                scheduler.active_job = None
 
 def execute_move_single_background(video_url: str, source_playlist: str, target_playlist: str, user_id=None):
     vid = extract_video_id(video_url)
@@ -335,6 +312,7 @@ def execute_move_single_background(video_url: str, source_playlist: str, target_
         task_manager.active_job = current_job_name
         
     success = False
+    moved_via_api = False
     if is_oauth_configured() and user_id is not None:
         import yt_api
         try:
@@ -345,10 +323,15 @@ def execute_move_single_background(video_url: str, source_playlist: str, target_
             if not source_playlist_item_id:
                 raise ValueError(f"Source item ID for '{video_url}' not found in '{source_playlist}'")
             success = yt_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+            if success:
+                moved_via_api = True
+            else:
+                append_agent_log(f"OAuth single move returned False for {video_url}")
         except Exception as e:
-            append_agent_log(f"OAuth single move failed: {e}")
+            append_agent_log(f"OAuth single move failed: {e}. Trying browser automation fallback...")
             success = False
-    else:
+            
+    if not success:
         driver = None
         try:
             driver = get_browser()
@@ -400,6 +383,11 @@ def execute_move_single_background(video_url: str, source_playlist: str, target_
                 
             # Update cache
             update_cache_for_move(video_url, source_playlist, target_playlist, user_id)
+            try:
+                db_helper.save_manual_move(user_id, vid, target_playlist)
+                append_agent_log(f"Recorded manual move: {vid} -> '{target_playlist}'")
+            except Exception as ex:
+                append_agent_log(f"Failed to record manual move: {ex}")
         else:
             append_agent_log(f"Failed to move single video: {video_url}")
     except Exception as e:
@@ -539,154 +527,123 @@ def execute_multi_source_move_background(items: List[dict], target_playlist: str
     total = len(items)
     append_agent_log(f"Starting multi-source batch move of {total} videos to '{target_playlist}' (user_id={user_id}).")
     
-    if is_oauth_configured() and user_id is not None:
-        import yt_api
-        success_count = 0
+    driver = None
+    success_count = 0
+    
+    # We want to determine if we should try API first.
+    use_api = is_oauth_configured() and user_id is not None
+    target_playlist_id = None
+    if use_api:
         try:
+            import yt_api
             target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
             if not target_playlist_id:
                 raise ValueError(f"Target playlist '{target_playlist}' not found in user cache")
-                
-            for i, item in enumerate(items):
-                url = item["video_url"]
-                source_playlist = item["source_playlist"]
-                
-                current_job_name = f"Multi-Source Move ({i+1}/{total})"
-                with task_manager.lock:
-                    scheduler.active_job = current_job_name
-                    task_manager.active_job = current_job_name
-                
-                vid = extract_video_id(url)
-                append_agent_log(f"[{i+1}/{total}] Moving from '{source_playlist}' to '{target_playlist}': {url}...")
-                
-                success = False
+        except Exception as e:
+            append_agent_log(f"Fatal error in API setup for multi-source batch move: {e}. Falling back to browser automation.")
+            use_api = False
+
+    try:
+        for i, item in enumerate(items):
+            url = item["video_url"]
+            source_playlist = item["source_playlist"]
+            
+            current_job_name = f"Multi-Source Move ({i+1}/{total})"
+            with task_manager.lock:
+                scheduler.active_job = current_job_name
+                task_manager.active_job = current_job_name
+            
+            vid = extract_video_id(url)
+            append_agent_log(f"[{i+1}/{total}] Moving from '{source_playlist}' to '{target_playlist}': {url}...")
+            
+            success = False
+            moved_via_api = False
+            
+            if use_api:
                 try:
                     source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
                     if not source_playlist_item_id:
                         raise ValueError(f"Source item ID for '{url}' not found")
                     success = yt_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
+                    if success:
+                        moved_via_api = True
+                    else:
+                        append_agent_log(f"API move returned False for {url}.")
                 except Exception as e:
-                    append_agent_log(f"Error moving {url}: {e}")
-                    
-                if success:
-                    success_count += 1
-                    append_agent_log(f"Successfully moved {url}.")
-                    
-                    title = find_title_in_cache(url, source_playlist, user_id)
-                    action = {
-                        "vid": vid,
-                        "title": title,
-                        "type": "MISPLACED",
-                        "from": [source_playlist],
-                        "to": target_playlist
-                    }
-                    from apply_maintenance import record_history
-                    action_id = record_history(action, user_id)
-                    
-                    try:
-                        channel = find_channel_in_cache(url, source_playlist, user_id)
-                        if channel and target_playlist.lower() != "watch later":
-                            db_helper.save_user_rule(user_id, channel, target_playlist)
-                            append_agent_log(f"Auto-learned rule for batch move: {channel} -> {target_playlist}")
-                    except Exception as ex:
-                        append_agent_log(f"Failed to auto-learn rule for batch move: {ex}")
-                        
-                    try:
-                        from apply_maintenance import send_discord_history_report
-                        send_discord_history_report([{**action, "action_id": action_id}])
-                    except: pass
-                    
-                    update_cache_for_move(url, source_playlist, target_playlist, user_id)
-                else:
-                    append_agent_log(f"Failed to move: {url}")
-                    
-            append_agent_log(f"Multi-source batch move completed. Successfully moved {success_count} of {total} videos.")
-            scheduler.send_webhook_notification(f"Multi-source batch move completed. Moved {success_count}/{total} videos to '{target_playlist}'.")
-        except Exception as e:
-            append_agent_log(f"Fatal error in API multi-source batch move: {e}")
-            scheduler.send_webhook_notification(f"Multi-source batch move failed: {e}", is_error=True)
-        finally:
-            with task_manager.lock:
-                task_manager.active_job = None
-                with scheduler.job_lock:
-                    scheduler.active_job = None
-    else:
-        driver = None
-        try:
-            driver = get_browser()
-            success_count = 0
+                    append_agent_log(f"API move failed for {url}: {e}")
             
-            for i, item in enumerate(items):
-                url = item["video_url"]
-                source_playlist = item["source_playlist"]
-                
-                current_job_name = f"Multi-Source Move ({i+1}/{total})"
-                with task_manager.lock:
-                    scheduler.active_job = current_job_name
-                    task_manager.active_job = current_job_name
-                
-                append_agent_log(f"[{i+1}/{total}] Moving from '{source_playlist}' to '{target_playlist}': {url}...")
-                
-                success = False
+            # If API move wasn't tried or failed, try browser fallback
+            if not success:
+                append_agent_log(f"Trying browser automation fallback for {url}...")
                 try:
+                    if driver is None:
+                        append_agent_log("Initializing browser automation fallback...")
+                        driver = get_browser()
                     success = move_video(url, source_playlist, target_playlist, driver=driver)
                 except Exception as e:
-                    append_agent_log(f"Error moving {url}: {e}")
+                    append_agent_log(f"Fallback browser action failed for {url}: {e}")
+            
+            if success:
+                success_count += 1
+                append_agent_log(f"Successfully moved {url}.")
                 
-                if success:
-                    success_count += 1
-                    append_agent_log(f"Successfully moved {url}.")
-                    
-                    vid = extract_video_id(url)
-                    title = find_title_in_cache(url, source_playlist)
-                    action = {
-                        "vid": vid,
-                        "title": title,
-                        "type": "MISPLACED",
-                        "from": [source_playlist],
-                        "to": target_playlist
-                    }
-                    from apply_maintenance import record_history
-                    action_id = record_history(action)
-                    
-                    try:
-                        channel = find_channel_in_cache(url, source_playlist)
-                        if channel and target_playlist.lower() != "watch later":
+                title = find_title_in_cache(url, source_playlist, user_id)
+                action = {
+                    "vid": vid,
+                    "title": title,
+                    "type": "MISPLACED",
+                    "from": [source_playlist],
+                    "to": target_playlist
+                }
+                from apply_maintenance import record_history
+                action_id = record_history(action, user_id)
+                
+                try:
+                    channel = find_channel_in_cache(url, source_playlist, user_id)
+                    if channel and target_playlist.lower() != "watch later":
+                        if user_id is None:
                             from apply_maintenance import learn_channel_rule
                             learn_channel_rule(channel, target_playlist)
-                            append_agent_log(f"Auto-learned rule for batch move: {channel} -> {target_playlist}")
-                    except Exception as ex:
-                        append_agent_log(f"Failed to auto-learn rule for batch move: {ex}")
-                    
-                    try:
-                        from apply_maintenance import send_discord_history_report
-                        send_discord_history_report([{**action, "action_id": action_id}])
-                    except Exception as ex:
-                        append_agent_log(f"Discord report fail: {ex}")
-                    
-                    update_cache_for_move(url, source_playlist, target_playlist)
-                else:
-                    append_agent_log(f"Failed to move: {url}")
-                    
-                time.sleep(1)
+                        else:
+                            db_helper.save_user_rule(user_id, channel, target_playlist)
+                        append_agent_log(f"Auto-learned rule for batch move: {channel} -> {target_playlist}")
+                except Exception as ex:
+                    append_agent_log(f"Failed to auto-learn rule for batch move: {ex}")
                 
-            append_agent_log(f"Multi-source batch move completed. Successfully moved {success_count} of {total} videos.")
-            scheduler.send_webhook_notification(f"Multi-source batch move completed. Moved {success_count}/{total} videos to '{target_playlist}'.")
-            
-        except Exception as e:
-            append_agent_log(f"Fatal error in multi-source batch move: {e}")
-            scheduler.send_webhook_notification(f"Multi-source batch move failed: {e}", is_error=True)
-        finally:
-            if driver:
                 try:
-                    driver.quit()
+                    from apply_maintenance import send_discord_history_report
+                    send_discord_history_report([{**action, "action_id": action_id}])
                 except:
                     pass
-            
-            with task_manager.lock:
-                task_manager.active_job = None
-                with scheduler.job_lock:
-                    scheduler.active_job = None
+                
+                update_cache_for_move(url, source_playlist, target_playlist, user_id)
+                try:
+                    db_helper.save_manual_move(user_id, vid, target_playlist)
+                    append_agent_log(f"Recorded manual move: {vid} -> '{target_playlist}'")
+                except Exception as ex:
+                    append_agent_log(f"Failed to record manual move: {ex}")
+            else:
+                append_agent_log(f"Failed to move: {url}")
+                
+            # If we did a browser move, sleep a tiny bit to avoid spamming
+            if not moved_via_api and driver is not None:
+                time.sleep(1)
+                
+        append_agent_log(f"Multi-source batch move completed. Successfully moved {success_count} of {total} videos.")
+        scheduler.send_webhook_notification(f"Multi-source batch move completed. Moved {success_count}/{total} videos to '{target_playlist}'.")
+    except Exception as e:
+        append_agent_log(f"Fatal error in multi-source batch move: {e}")
+        scheduler.send_webhook_notification(f"Multi-source batch move failed: {e}", is_error=True)
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+        with task_manager.lock:
+            task_manager.active_job = None
+            with scheduler.job_lock:
+                scheduler.active_job = None
 
 def execute_multi_source_delete_background(items: List[dict], user_id=None):
     total = len(items)
@@ -1020,6 +977,8 @@ def execute_apply_maintenance_background(user_id, force=False):
         append_agent_log("No maintenance queue found.")
         return
         
+    driver = None
+    use_fallback = False
     try:
         with open(maint_path, "r", encoding="utf-8") as f:
             actions = json.load(f)
@@ -1047,27 +1006,96 @@ def execute_apply_maintenance_background(user_id, force=False):
                 task_manager.active_job = current_job_name
                 
             success = False
-            try:
-                if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
-                    remove_playlists = a.get("remove", [])
-                    for p in remove_playlists:
-                        playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
-                        if playlist_item_id:
+            
+            if use_fallback:
+                try:
+                    if driver is None:
+                        append_agent_log("Initializing browser automation fallback...")
+                        driver = get_browser()
+                        
+                    if action_type == 'MISPLACED':
+                        target = a.get("to")
+                        old_ps = a.get("from", [])
+                        append_agent_log(f"[Fallback] Adding {title} to '{target}' via browser...")
+                        if add_video_to_playlist(url, target, driver=driver):
+                            for old_p in old_ps:
+                                append_agent_log(f"[Fallback] Removing {title} from '{old_p}' via browser...")
+                                try:
+                                    remove_video_from_playlist(url, old_p, driver=driver)
+                                except Exception as re:
+                                    append_agent_log(f"  Failed to remove from '{old_p}': {re}")
+                            update_cache_for_move(url, old_ps[0] if old_ps else None, target, user_id)
+                            success = True
+                    elif action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                        remove_playlists = a.get("remove", [])
+                        for p in remove_playlists:
+                            append_agent_log(f"[Fallback] Removing duplicate {title} from '{p}' via browser...")
+                            try:
+                                remove_video_from_playlist(url, p, driver=driver)
+                            except Exception as re:
+                                append_agent_log(f"  Failed to remove from '{p}': {re}")
+                            update_cache_for_delete(url, p, user_id)
+                            success = True
+                except Exception as fe:
+                    append_agent_log(f"Fallback browser action failed for {title}: {fe}")
+                    success = False
+            else:
+                try:
+                    if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                        remove_playlists = a.get("remove", [])
+                        for p in remove_playlists:
+                            playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
+                            if not playlist_item_id:
+                                raise ValueError(f"Missing playlist item ID for {p} in cache")
                             yt_api.remove_video_from_playlist(user_id, playlist_item_id)
                             update_cache_for_delete(url, p, user_id)
                             success = True
-                elif action_type == "MISPLACED":
-                    source_playlist = a.get("from", [None])[0]
-                    target_playlist = a.get("to")
-                    target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
-                    source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
-                    if target_playlist_id and source_playlist_item_id:
+                    elif action_type == "MISPLACED":
+                        source_playlist = a.get("from", [None])[0]
+                        target_playlist = a.get("to")
+                        target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
+                        source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
+                        if not target_playlist_id:
+                            raise ValueError(f"Missing playlist ID for {target_playlist}")
+                        if not source_playlist_item_id:
+                            raise ValueError(f"Missing playlist item ID for {source_playlist} in cache")
                         yt_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
                         update_cache_for_move(url, source_playlist, target_playlist, user_id)
                         success = True
-            except Exception as e:
-                append_agent_log(f"Error applying action for {title}: {e}")
-                success = False
+                except Exception as e:
+                    append_agent_log(f"Error applying action for {title} via API: {e}. Switching to browser automation fallback.")
+                    use_fallback = True
+                    try:
+                        if driver is None:
+                            append_agent_log("Initializing browser automation fallback...")
+                            driver = get_browser()
+                            
+                        if action_type == 'MISPLACED':
+                            target = a.get("to")
+                            old_ps = a.get("from", [])
+                            append_agent_log(f"[Fallback] Adding {title} to '{target}' via browser...")
+                            if add_video_to_playlist(url, target, driver=driver):
+                                for old_p in old_ps:
+                                    append_agent_log(f"[Fallback] Removing {title} from '{old_p}' via browser...")
+                                    try:
+                                        remove_video_from_playlist(url, old_p, driver=driver)
+                                    except Exception as re:
+                                        append_agent_log(f"  Failed to remove from '{old_p}': {re}")
+                                update_cache_for_move(url, old_ps[0] if old_ps else None, target, user_id)
+                                success = True
+                        elif action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                            remove_playlists = a.get("remove", [])
+                            for p in remove_playlists:
+                                append_agent_log(f"[Fallback] Removing duplicate {title} from '{p}' via browser...")
+                                try:
+                                    remove_video_from_playlist(url, p, driver=driver)
+                                except Exception as re:
+                                    append_agent_log(f"  Failed to remove from '{p}': {re}")
+                                update_cache_for_delete(url, p, user_id)
+                                success = True
+                    except Exception as fe:
+                        append_agent_log(f"Fallback browser action failed for {title}: {fe}")
+                        success = False
                 
             if success:
                 success_count += 1
@@ -1106,6 +1134,9 @@ def execute_apply_maintenance_background(user_id, force=False):
         append_agent_log(f"Fatal error in maintenance execution: {e}")
         scheduler.send_webhook_notification(f"Maintenance execution failed: {e}", is_error=True)
     finally:
+        if driver:
+            try: driver.quit()
+            except: pass
         with task_manager.lock:
             task_manager.active_job = None
             with scheduler.job_lock:
@@ -1171,6 +1202,8 @@ def execute_batch_maintenance_api_background(user_id, selected_vids):
         append_agent_log("No maintenance queue found.")
         return
         
+    driver = None
+    use_fallback = False
     try:
         with open(maint_path, "r", encoding="utf-8") as f:
             actions = json.load(f)
@@ -1193,27 +1226,96 @@ def execute_batch_maintenance_api_background(user_id, selected_vids):
                     task_manager.active_job = current_job_name
                     
                 success = False
-                try:
-                    if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
-                        remove_playlists = a.get("remove", [])
-                        for p in remove_playlists:
-                            playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
-                            if playlist_item_id:
+                
+                if use_fallback:
+                    try:
+                        if driver is None:
+                            append_agent_log("Initializing browser automation fallback...")
+                            driver = get_browser()
+                            
+                        if action_type == 'MISPLACED':
+                            target = a.get("to")
+                            old_ps = a.get("from", [])
+                            append_agent_log(f"[Fallback] Adding {title} to '{target}' via browser...")
+                            if add_video_to_playlist(url, target, driver=driver):
+                                for old_p in old_ps:
+                                    append_agent_log(f"[Fallback] Removing {title} from '{old_p}' via browser...")
+                                    try:
+                                        remove_video_from_playlist(url, old_p, driver=driver)
+                                    except Exception as re:
+                                        append_agent_log(f"  Failed to remove from '{old_p}': {re}")
+                                update_cache_for_move(url, old_ps[0] if old_ps else None, target, user_id)
+                                success = True
+                        elif action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                            remove_playlists = a.get("remove", [])
+                            for p in remove_playlists:
+                                append_agent_log(f"[Fallback] Removing duplicate {title} from '{p}' via browser...")
+                                try:
+                                    remove_video_from_playlist(url, p, driver=driver)
+                                except Exception as re:
+                                    append_agent_log(f"  Failed to remove from '{p}': {re}")
+                                update_cache_for_delete(url, p, user_id)
+                                success = True
+                    except Exception as fe:
+                        append_agent_log(f"Fallback browser action failed for {title}: {fe}")
+                        success = False
+                else:
+                    try:
+                        if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                            remove_playlists = a.get("remove", [])
+                            for p in remove_playlists:
+                                playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
+                                if not playlist_item_id:
+                                    raise ValueError(f"Missing playlist item ID for {p} in cache")
                                 yt_api.remove_video_from_playlist(user_id, playlist_item_id)
                                 update_cache_for_delete(url, p, user_id)
                                 success = True
-                    elif action_type == "MISPLACED":
-                        source_playlist = a.get("from", [None])[0]
-                        target_playlist = a.get("to")
-                        target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
-                        source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
-                        if target_playlist_id and source_playlist_item_id:
+                        elif action_type == "MISPLACED":
+                            source_playlist = a.get("from", [None])[0]
+                            target_playlist = a.get("to")
+                            target_playlist_id = get_playlist_id_by_name(target_playlist, user_id)
+                            source_playlist_item_id = get_playlist_item_id_from_cache(url, source_playlist, user_id)
+                            if not target_playlist_id:
+                                raise ValueError(f"Missing playlist ID for {target_playlist}")
+                            if not source_playlist_item_id:
+                                raise ValueError(f"Missing playlist item ID for {source_playlist} in cache")
                             yt_api.move_video(user_id, source_playlist_item_id, target_playlist_id, vid)
                             update_cache_for_move(url, source_playlist, target_playlist, user_id)
                             success = True
-                except Exception as e:
-                    append_agent_log(f"Error applying action for {title}: {e}")
-                    success = False
+                    except Exception as e:
+                        append_agent_log(f"Error applying action for {title} via API: {e}. Switching to browser automation fallback.")
+                        use_fallback = True
+                        try:
+                            if driver is None:
+                                append_agent_log("Initializing browser automation fallback...")
+                                driver = get_browser()
+                                
+                            if action_type == 'MISPLACED':
+                                target = a.get("to")
+                                old_ps = a.get("from", [])
+                                append_agent_log(f"[Fallback] Adding {title} to '{target}' via browser...")
+                                if add_video_to_playlist(url, target, driver=driver):
+                                    for old_p in old_ps:
+                                        append_agent_log(f"[Fallback] Removing {title} from '{old_p}' via browser...")
+                                        try:
+                                            remove_video_from_playlist(url, old_p, driver=driver)
+                                        except Exception as re:
+                                            append_agent_log(f"  Failed to remove from '{old_p}': {re}")
+                                    update_cache_for_move(url, old_ps[0] if old_ps else None, target, user_id)
+                                    success = True
+                            elif action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                                remove_playlists = a.get("remove", [])
+                                for p in remove_playlists:
+                                    append_agent_log(f"[Fallback] Removing duplicate {title} from '{p}' via browser...")
+                                    try:
+                                        remove_video_from_playlist(url, p, driver=driver)
+                                    except Exception as re:
+                                        append_agent_log(f"  Failed to remove from '{p}': {re}")
+                                    update_cache_for_delete(url, p, user_id)
+                                    success = True
+                        except Exception as fe:
+                            append_agent_log(f"Fallback browser action failed for {title}: {fe}")
+                            success = False
                     
                 if success:
                     success_count += 1
@@ -1252,6 +1354,9 @@ def execute_batch_maintenance_api_background(user_id, selected_vids):
         append_agent_log(f"Fatal error in batch maintenance execution: {e}")
         scheduler.send_webhook_notification(f"Batch maintenance execution failed: {e}", is_error=True)
     finally:
+        if driver:
+            try: driver.quit()
+            except: pass
         with task_manager.lock:
             task_manager.active_job = None
             with scheduler.job_lock:
@@ -1371,6 +1476,8 @@ def execute_batch_maintenance_delete_api_background(user_id, selected_vids):
         append_agent_log("No maintenance queue found.")
         return
         
+    driver = None
+    use_fallback = False
     try:
         with open(maint_path, "r", encoding="utf-8") as f:
             actions = json.load(f)
@@ -1393,28 +1500,88 @@ def execute_batch_maintenance_delete_api_background(user_id, selected_vids):
                     task_manager.active_job = current_job_name
                     
                 success = False
-                try:
-                    playlists_to_remove = []
-                    if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
-                        remove_playlists = a.get("remove", [])
-                        keep_playlist = a.get("keep")
-                        playlists_to_remove.extend(remove_playlists)
-                        if keep_playlist:
-                            playlists_to_remove.append(keep_playlist)
-                    elif action_type == "MISPLACED":
-                        from_playlists = a.get("from", [])
-                        playlists_to_remove.extend(from_playlists)
-                        
-                    for p in playlists_to_remove:
-                        playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
-                        if playlist_item_id:
+                
+                if use_fallback:
+                    try:
+                        if driver is None:
+                            append_agent_log("Initializing browser automation fallback...")
+                            driver = get_browser()
+                            
+                        playlists_to_remove = []
+                        if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                            remove_playlists = a.get("remove", [])
+                            keep_playlist = a.get("keep")
+                            playlists_to_remove.extend(remove_playlists)
+                            if keep_playlist:
+                                playlists_to_remove.append(keep_playlist)
+                        elif action_type == "MISPLACED":
+                            from_playlists = a.get("from", [])
+                            playlists_to_remove.extend(from_playlists)
+                            
+                        for p in playlists_to_remove:
+                            append_agent_log(f"[Fallback] Removing {title} from '{p}' via browser...")
+                            try:
+                                remove_video_from_playlist(url, p, driver=driver)
+                            except Exception as re:
+                                append_agent_log(f"  Failed to remove from '{p}': {re}")
+                            update_cache_for_delete(url, p, user_id)
+                            success = True
+                    except Exception as fe:
+                        append_agent_log(f"Fallback browser deletion failed for {title}: {fe}")
+                        success = False
+                else:
+                    try:
+                        playlists_to_remove = []
+                        if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                            remove_playlists = a.get("remove", [])
+                            keep_playlist = a.get("keep")
+                            playlists_to_remove.extend(remove_playlists)
+                            if keep_playlist:
+                                playlists_to_remove.append(keep_playlist)
+                        elif action_type == "MISPLACED":
+                            from_playlists = a.get("from", [])
+                            playlists_to_remove.extend(from_playlists)
+                            
+                        for p in playlists_to_remove:
+                            playlist_item_id = get_playlist_item_id_from_cache(url, p, user_id)
+                            if not playlist_item_id:
+                                raise ValueError(f"Missing playlist item ID for {p} in cache")
                             yt_api.remove_video_from_playlist(user_id, playlist_item_id)
                             update_cache_for_delete(url, p, user_id)
                             success = True
-                except Exception as e:
-                    append_agent_log(f"Error deleting video {title}: {e}")
-                    success = False
-                    
+                    except Exception as e:
+                        append_agent_log(f"Error deleting video {title} via API: {e}. Switching to browser automation fallback.")
+                        use_fallback = True
+                        try:
+                            if driver is None:
+                                append_agent_log("Initializing browser automation fallback...")
+                                driver = get_browser()
+                                
+                            playlists_to_remove = []
+                            if action_type in ["DUPLICATE", "DUPLICATE_NO_TARGET"]:
+                                remove_playlists = a.get("remove", [])
+                                keep_playlist = a.get("keep")
+                                playlists_to_remove.extend(remove_playlists)
+                                if keep_playlist:
+                                    playlists_to_remove.append(keep_playlist)
+                            elif action_type == "MISPLACED":
+                                from_playlists = a.get("from", [])
+                                playlists_to_remove.extend(from_playlists)
+                                
+                            for p in playlists_to_remove:
+                                append_agent_log(f"[Fallback] Removing {title} from '{p}' via browser...")
+                                try:
+                                    remove_video_from_playlist(url, p, driver=driver)
+                                except Exception as re:
+                                    append_agent_log(f"  Failed to remove from '{p}': {re}")
+                                update_cache_for_delete(url, p, user_id)
+                                success = True
+                        except Exception as fe:
+                            append_agent_log(f"Fallback browser deletion failed for {title}: {fe}")
+                            success = False
+                        else:
+                            success = False
+                            
                 if success:
                     success_count += 1
                     applied_actions.append(a)
@@ -1424,6 +1591,8 @@ def execute_batch_maintenance_delete_api_background(user_id, selected_vids):
                     delete_action_record = {**a, "type": f"DELETE_FROM_{action_type}"}
                     action_id = record_history(delete_action_record, user_id)
                     a["action_id"] = action_id
+                else:
+                    remaining_actions.append(a)
             else:
                 remaining_actions.append(a)
                 
@@ -1433,6 +1602,10 @@ def execute_batch_maintenance_delete_api_background(user_id, selected_vids):
         scheduler.send_webhook_notification(f"Batch maintenance deletion completed. Deleted {success_count}/{total} videos.")
     except Exception as e:
         append_agent_log(f"Fatal error in batch maintenance deletion execution: {e}")
+    finally:
+        if driver:
+            try: driver.quit()
+            except: pass
 
 def execute_batch_maintenance_background(actions):
     base_dir = os.path.dirname(os.path.dirname(__file__))
